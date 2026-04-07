@@ -2,6 +2,9 @@
   "permissions": {
     "allow": [
       "Read(//c/Users/mkain/.claude/projects/**)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\mkain\\Documents\\Visual Code\\WRT Companion App"
     ]
   }
 }
