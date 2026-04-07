@@ -385,6 +385,9 @@ function MyLoot.Render()
   if ui.statsScrollFrame then
     ui.statsScrollFrame:SetShown(view == "stats")
   end
+  if ui.raidScrollFrame then
+    ui.raidScrollFrame:SetShown(view == "raid")
+  end
 
   -- Icon nur im Loot-Tab sichtbar
   if ui.activeItemIcon then
