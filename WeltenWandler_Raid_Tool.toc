@@ -1,0 +1,20 @@
+## Interface: 120001
+## Title: WeltenWandler Raid Tool
+## Notes: Loot- und Prioverwaltung für die Gilde WeltenWandler
+## Author: Sarome-Antonidas
+## Version: 0.1.0
+## SavedVariables: MyLootDB, MyLootBridge
+## X-GitHub: https://github.com/Sarome5/WeltenWandler-Raid-Tool
+
+data\raid_data.lua
+data\stats_data.lua
+
+main.lua
+minimap.lua
+ui\dropdown.lua
+prio.lua
+loot.lua
+prio_view.lua
+import_view.lua
+bridge.lua
+import.lua
