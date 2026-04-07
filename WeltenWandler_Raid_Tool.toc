@@ -3,8 +3,12 @@
 ## Notes: Loot- und Prioverwaltung für die Gilde WeltenWandler
 ## Author: Sarome-Antonidas
 ## Version: 0.1.0
-## SavedVariables: MyLootDB, MyLootBridge
+## SavedVariables: MyLootDB
 ## X-GitHub: https://github.com/Sarome5/WeltenWandler-Raid-Tool
+
+libs\LibStub\LibStub.lua
+libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 
 data\raid_data.lua
 data\stats_data.lua

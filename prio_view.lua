@@ -27,6 +27,9 @@ local function GetCharacterClassColor(name)
   return nil
 end
 
+-- Debounce-Flag: verhindert dass mehrere ContinueOnItemLoad gleichzeitig neu rendern
+MyLoot._prioRenderPending = false
+
 function MyLoot.RenderPrioList()
   local ui = MyLoot.UI
 
@@ -38,23 +41,22 @@ function MyLoot.RenderPrioList()
     sf:SetScript("OnMouseWheel", function(_, delta)
       sf:SetVerticalScroll(math.max(0, sf:GetVerticalScroll() - delta * 30))
     end)
-
-    local sc = CreateFrame("Frame", nil, sf)
-    sc:SetWidth(680)
-    sc:SetHeight(1)
-    sf:SetScrollChild(sc)
-
     ui.prioListFrame = sf
-    ui.prioListChild = sc
   end
 
   local sf = ui.prioListFrame
-  local sc = ui.prioListChild
 
-  for _, c in ipairs({sc:GetChildren()}) do c:Hide() end
-  for _, r in ipairs({sc:GetRegions()}) do
-    if r:IsObjectType("FontString") then r:SetText("") end
+  -- ScrollChild komplett neu erstellen statt GetRegions() zu leeren
+  -- (verhindert Stack Overflow durch akkumulierte tausende von Regions)
+  if ui.prioListChild then
+    ui.prioListChild:Hide()
+    ui.prioListChild:SetParent(nil)
   end
+  local sc = CreateFrame("Frame", nil, sf)
+  sc:SetWidth(ui.content:GetWidth() or 680)
+  sc:SetHeight(1)
+  sf:SetScrollChild(sc)
+  ui.prioListChild = sc
 
   sf:Show()
   sf:SetVerticalScroll(0)
@@ -154,7 +156,18 @@ function MyLoot.RenderPrioList()
 
             if not itemName then
               local itemObj = Item:CreateFromItemID(tonumber(itemID) or 0)
-              itemObj:ContinueOnItemLoad(function() MyLoot.Render() end)
+              itemObj:ContinueOnItemLoad(function()
+                -- Debounce: nur ein Render auslösen wenn mehrere Items gleichzeitig laden
+                if not MyLoot._prioRenderPending then
+                  MyLoot._prioRenderPending = true
+                  C_Timer.After(0.05, function()
+                    MyLoot._prioRenderPending = false
+                    if MyLoot.currentView == "prio" then
+                      MyLoot.Render()
+                    end
+                  end)
+                end
+              end)
             end
 
             -- Icon

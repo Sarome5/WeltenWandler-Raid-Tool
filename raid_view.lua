@@ -1,5 +1,7 @@
 MyLoot = MyLoot or {}
 
+MyLoot._raidRenderPending = false
+
 function MyLoot.RenderRaidView()
   local ui   = MyLoot.UI
   local data = WRT_RaidData
@@ -25,13 +27,15 @@ function MyLoot.RenderRaidView()
   ui.raidScrollFrame:Show()
   ui.raidScrollFrame:SetVerticalScroll(0)
 
-  -- Child leeren
-  local child = ui.raidScrollChild
-  for _, c in ipairs({ child:GetChildren() }) do c:Hide() end
-  for _, r in ipairs({ child:GetRegions() }) do
-    if r:IsObjectType("FontString") then r:SetText("") end
-    if r:IsObjectType("Texture")    then r:Hide() end
+  -- ScrollChild komplett neu erstellen (verhindert Stack Overflow durch akkumulierte Regions)
+  if ui.raidScrollChild then
+    ui.raidScrollChild:Hide()
+    ui.raidScrollChild:SetParent(nil)
   end
+  local child = CreateFrame("Frame", nil, ui.raidScrollFrame)
+  child:SetSize(ui.content:GetWidth() or 660, 1)
+  ui.raidScrollFrame:SetScrollChild(child)
+  ui.raidScrollChild = child
 
   local y = -10
 
@@ -47,11 +51,12 @@ function MyLoot.RenderRaidView()
   end
 
   local statusMap = {
-    ["angemeldet"] = { text = "Angemeldet",  color = { 0.2, 1,    0.2  } },
-    ["spaeter"]    = { text = "Später",      color = { 1,   0.85, 0    } },
-    ["vorlaeufig"] = { text = "Vorläufig",   color = { 1,   0.6,  0.1  } },
-    ["bench"]      = { text = "Ersatzbank",  color = { 0.4, 0.7,  1    } },
-    ["abgelehnt"]  = { text = "Abwesend",    color = { 1,   0.3,  0.3  } },
+    ["angemeldet"] = { text = "Angemeldet",      color = { 0.2, 1,    0.2  } },
+    ["spaeter"]    = { text = "Später",          color = { 1,   0.85, 0    } },
+    ["vorlaeufig"] = { text = "Vorläufig",       color = { 1,   0.6,  0.1  } },
+    ["bench"]      = { text = "Ersatzbank",      color = { 0.4, 0.7,  1    } },
+    ["abgelehnt"]  = { text = "Abwesend",        color = { 1,   0.3,  0.3  } },
+    ["none"]       = { text = "Anmeldung fehlt", color = { 0.6, 0.6,  0.6  } },
   }
 
   local function AddRow(label, value, valueColor)
@@ -113,22 +118,99 @@ function MyLoot.RenderRaidView()
     local prioText  = raid.prioFilled and "Ausgefüllt" or "Nicht ausgefüllt"
     AddRow("Prio-Liste:", prioText, prioColor)
 
-    -- Prio-Items
+    -- Prio-Items (nach Schwierigkeit gruppiert)
     if raid.prioFilled and raid.prioItems and #raid.prioItems > 0 then
       AddSeparator()
-      local ph = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-      ph:SetPoint("TOPLEFT", 16, y)
-      ph:SetTextColor(1, 0.82, 0)
-      ph:SetText("Meine Prio-Items:")
-      y = y - 20
 
+      -- Items nach difficulty gruppieren; Reihenfolge des ersten Auftretens beibehalten
+      local groups    = {}   -- { diff → { entry, ... } }
+      local diffOrder = {}
       for _, entry in ipairs(raid.prioItems) do
-        local row = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        row:SetPoint("TOPLEFT", 26, y)
-        row:SetText(string.format("Prio %d  —  %s",
-          entry.priority or 0,
-          entry.itemName or ("Item " .. (entry.itemID or "?"))))
-        y = y - 18
+        local diff = entry.difficulty or raid.difficulty or "?"
+        if not groups[diff] then
+          groups[diff] = {}
+          table.insert(diffOrder, diff)
+        end
+        table.insert(groups[diff], entry)
+      end
+      -- Innerhalb jeder Gruppe nach Priority sortieren
+      for _, items in pairs(groups) do
+        table.sort(items, function(a, b) return (a.priority or 0) < (b.priority or 0) end)
+      end
+
+      local function RenderPrioItem(entry)
+        local itemID = entry.itemID
+        local itemName, itemLink, itemQuality, _, _, _, _, _, _, itemIcon = GetItemInfo(itemID or 0)
+
+        if not itemName and itemID then
+          local itemObj = Item:CreateFromItemID(tonumber(itemID))
+          itemObj:ContinueOnItemLoad(function()
+            if not MyLoot._raidRenderPending then
+              MyLoot._raidRenderPending = true
+              C_Timer.After(0.05, function()
+                MyLoot._raidRenderPending = false
+                if MyLoot.currentView == "raid" then MyLoot.Render() end
+              end)
+            end
+          end)
+        end
+
+        -- Prio-Label
+        local pLabel = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        pLabel:SetPoint("TOPLEFT", 26, y - 1)
+        pLabel:SetTextColor(0.6, 0.6, 0.6)
+        pLabel:SetText(string.format("Prio %d", entry.priority or 0))
+
+        -- Icon
+        if itemIcon then
+          local icon = child:CreateTexture(nil, "ARTWORK")
+          icon:SetSize(16, 16)
+          icon:SetPoint("TOPLEFT", 80, y - 1)
+          icon:SetTexture(itemIcon)
+        end
+
+        -- Item-Name in Qualitätsfarbe
+        local nameStr = itemName or ("Item " .. tostring(itemID or "?"))
+        local r, g, b = 0.8, 0.8, 0.8
+        if itemQuality then r, g, b = GetItemQualityColor(itemQuality) end
+
+        local nameText = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        nameText:SetPoint("TOPLEFT", 100, y - 1)
+        nameText:SetWidth(360)
+        nameText:SetJustifyH("LEFT")
+        nameText:SetWordWrap(false)
+        nameText:SetTextColor(r, g, b)
+        nameText:SetText(nameStr)
+
+        -- Tooltip-Button
+        if itemLink then
+          local tipBtn = CreateFrame("Button", nil, child)
+          tipBtn:SetPoint("TOPLEFT", 78, y + 2)
+          tipBtn:SetSize(390, 18)
+          tipBtn:SetScript("OnEnter", function(self)
+            GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+            GameTooltip:SetHyperlink(itemLink)
+            GameTooltip:Show()
+          end)
+          tipBtn:SetScript("OnLeave", function() GameTooltip:Hide() end)
+        end
+
+        y = y - 20
+      end
+
+      for _, diff in ipairs(diffOrder) do
+        -- Schwierigkeits-Header
+        local ph = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        ph:SetPoint("TOPLEFT", 16, y)
+        ph:SetTextColor(1, 0.82, 0)
+        ph:SetText("Prioauswahl " .. diff .. ":")
+        y = y - 20
+
+        for _, entry in ipairs(groups[diff]) do
+          RenderPrioItem(entry)
+        end
+
+        y = y - 6  -- Abstand zwischen Gruppen
       end
     end
 

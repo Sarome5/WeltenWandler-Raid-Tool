@@ -3,7 +3,11 @@
     "allow": [
       "Read(//c/Users/mkain/.claude/projects/**)",
       "Read(//e/battle.net/World of Warcraft/_retail_/Interface/AddOns/RCLootCouncil/**)",
-      "Read(//e/battle.net/World of Warcraft/_retail_/Interface/AddOns/**)"
+      "Read(//e/battle.net/World of Warcraft/_retail_/Interface/AddOns/**)",
+      "Read(//e/battle.net/World of Warcraft/_retail_/WTF/Account/APOPHIS5/SavedVariables/**)",
+      "Bash(cp 'e:/battle.net/World of Warcraft/_retail_/Interface/AddOns/Simulationcraft/libs/LibStub/LibStub.lua' 'e:/battle.net/World of Warcraft/_retail_/Interface/AddOns/WeltenWandler_Raid_Tool/libs/LibStub/')",
+      "Bash(cp 'e:/battle.net/World of Warcraft/_retail_/Interface/AddOns/Simulationcraft/libs/LibDataBroker-1.1/LibDataBroker-1.1.lua' 'e:/battle.net/World of Warcraft/_retail_/Interface/AddOns/WeltenWandler_Raid_Tool/libs/LibDataBroker-1.1/')",
+      "Bash(cp 'e:/battle.net/World of Warcraft/_retail_/Interface/AddOns/Simulationcraft/libs/LibDBIcon-1.0/LibDBIcon-1.0.lua' 'e:/battle.net/World of Warcraft/_retail_/Interface/AddOns/WeltenWandler_Raid_Tool/libs/LibDBIcon-1.0/')"
     ],
     "additionalDirectories": [
       "C:\\Users\\mkain\\Documents\\Visual Code\\WRT Companion App"

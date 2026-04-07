@@ -47,13 +47,15 @@ function MyLoot.RenderStatsView()
   ui.statsScrollFrame:Show()
   ui.statsScrollFrame:SetVerticalScroll(0)
 
-  -- Child leeren
-  local child = ui.statsScrollChild
-  for _, c in ipairs({ child:GetChildren() }) do c:Hide() end
-  for _, r in ipairs({ child:GetRegions() }) do
-    if r:IsObjectType("FontString") then r:SetText("") end
-    if r:IsObjectType("Texture") then r:Hide() end
+  -- ScrollChild komplett neu erstellen (verhindert Stack Overflow durch akkumulierte Regions)
+  if ui.statsScrollChild then
+    ui.statsScrollChild:Hide()
+    ui.statsScrollChild:SetParent(nil)
   end
+  local child = CreateFrame("Frame", nil, ui.statsScrollFrame)
+  child:SetSize(ui.content:GetWidth() or 660, 1)
+  ui.statsScrollFrame:SetScrollChild(child)
+  ui.statsScrollChild = child
 
   -- =========================
   -- TAB-LEISTE (topPanel)

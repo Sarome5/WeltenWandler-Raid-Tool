@@ -532,9 +532,42 @@ end
 -- =========================
 -- EVENTS
 -- =========================
+function MyLoot.CheckAutoReset()
+  local data = WRT_RaidData
+  -- Nur wenn Raid-Daten importiert sind UND Boss-Daten existieren
+  if not data or not data.raids or #data.raids == 0 then return end
+  if not MyLootDB.raid.bosses or #MyLootDB.raid.bosses == 0 then return end
+
+  -- Neuesten scheduledAt aus allen importierten Raids ermitteln
+  local latestScheduled = 0
+  for _, raid in ipairs(data.raids) do
+    if raid.scheduledAt and raid.scheduledAt > latestScheduled then
+      latestScheduled = raid.scheduledAt
+    end
+  end
+
+  if latestScheduled == 0 then return end
+
+  -- Reset-Zeitpunkt: Tag nach dem letzten Raid um 08:00 Uhr
+  -- (Puffer für Nachteulen die nach Mitternacht noch online sind)
+  local t = date("*t", latestScheduled)
+  t.hour = 8; t.min = 0; t.sec = 0
+  local resetAt = time(t) + 86400  -- +1 Tag = nächster Tag 08:00
+
+  if time() >= resetAt then
+    local count = #MyLootDB.raid.bosses
+    MyLootDB.raid.bosses       = {}
+    MyLootDB.selectedBossIndex = 1
+    print(string.format(
+      "|cff00ccff[WRT]|r Raidabend beendet – %d Boss-Einträge wurden automatisch zurückgesetzt.",
+      count))
+  end
+end
+
 frame:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
     MyLoot.UpdateRole()
+    MyLoot.CheckAutoReset()
     C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", "REQUEST_SYNC", "RAID")
 
   elseif event == "LOOT_READY" then
