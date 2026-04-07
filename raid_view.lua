@@ -77,11 +77,11 @@ function MyLoot.RenderRaidView()
 
   -- Anmeldestatus
   local statusMap = {
-    ["angemeldet"] = { text = "Angemeldet", color = { 0.2, 1,    0.2  } },
-    ["spaeter"]    = { text = "Später",     color = { 1,   0.85,  0    } },
-    ["vorlaeufig"] = { text = "Vorläufig",  color = { 1,   0.6,   0.1  } },
-    ["bench"]      = { text = "Bench",      color = { 0.4, 0.7,   1    } },
-    ["abgelehnt"]  = { text = "Abgelehnt",  color = { 1,   0.3,   0.3  } },
+    ["angemeldet"] = { text = "Angemeldet",  color = { 0.2, 1,    0.2  } },
+    ["spaeter"]    = { text = "Später",      color = { 1,   0.85, 0    } },
+    ["vorlaeufig"] = { text = "Vorläufig",   color = { 1,   0.6,  0.1  } },
+    ["bench"]      = { text = "Ersatzbank",  color = { 0.4, 0.7,  1    } },
+    ["abgelehnt"]  = { text = "Abwesend",    color = { 1,   0.3,  0.3  } },
   }
   local statusEntry = statusMap[data.signupStatus]
   local statusText  = statusEntry and statusEntry.text  or (data.signupStatus or "Unbekannt")
