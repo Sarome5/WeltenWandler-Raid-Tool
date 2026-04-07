@@ -16,9 +16,11 @@ frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("ENCOUNTER_START")
 frame:RegisterEvent("ENCOUNTER_END")
 
-MyLoot.isEncounterActive = false
-MyLoot.isBossActive = false
-MyLoot.hasLootedBoss = false
+MyLoot.isEncounterActive        = false
+MyLoot.isBossActive             = false
+MyLoot.hasLootedBoss            = false
+MyLoot._activeLootBossIndex     = nil   -- eingefroren bei ENCOUNTER_END, unabhängig vom Dropdown
+MyLoot._awaitingLootAssignment  = false -- true zwischen ENCOUNTER_END (Kill) und nächstem ENCOUNTER_START
 
 C_ChatInfo.RegisterAddonMessagePrefix("MYLOOT")
 C_ChatInfo.RegisterAddonMessagePrefix("MYLOOT_SYNC")
@@ -496,15 +498,8 @@ SlashCmdList["MYLOOTRESET"] = function()
   ["ffaItems"] = {
   },
   ["superprioEnabled"] = true,
-  ["bosses"] = {
-  {
-  ["bossName"] = "Test Boss",
-  ["items"] = {
-  },
-  },
-  },
-  ["prioData"] = {
-  },
+  ["bosses"]           = {},
+  ["prioData"]         = {},
   },
   ["selectedBossIndex"] = 1,
   }
@@ -562,12 +557,15 @@ frame:SetScript("OnEvent", function(_, event, ...)
       MyLoot.isEncounterActive = false
       MyLoot.isBossActive = false
 
-      local boss = MyLoot.GetSelectedBoss()
+      -- aktiven Loot-Boss nutzen, nicht den aktuell im Dropdown gewählten
+      local idx  = MyLoot._activeLootBossIndex
+      local boss = idx and MyLootDB.raid.bosses[idx]
       if boss then
         boss._lootInitialized = false
-        boss._slotUIDs = nil
-        boss._lootUIDCounter = nil
+        boss._slotUIDs        = nil
+        boss._lootUIDCounter  = nil
       end
+      MyLoot._activeLootBossIndex = nil
     end
 
   elseif event == "CHAT_MSG_LOOT" then
@@ -586,9 +584,10 @@ frame:SetScript("OnEvent", function(_, event, ...)
   elseif event == "ENCOUNTER_START" then
     local encounterID, encounterName = ...
 
-    MyLoot.isEncounterActive = true
-    MyLoot.isBossActive = true
-    MyLoot.hasLootedBoss = false
+    MyLoot.isEncounterActive       = true
+    MyLoot.isBossActive            = true
+    MyLoot.hasLootedBoss           = false
+    MyLoot._awaitingLootAssignment = false  -- neuer Pull → Chat-Zuweisung schließen
 
 
   elseif event == "ENCOUNTER_END" then
@@ -596,6 +595,10 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
     if success == 1 then
       MyLoot.AddBoss(encounterName, difficultyID)
+      -- Boss-Index für Loot-Erkennung einfrieren – unabhängig vom Dropdown
+      MyLoot._activeLootBossIndex    = MyLootDB.selectedBossIndex
+      -- Chat-Zuweisung ab jetzt aktiv (bis zum nächsten ENCOUNTER_START)
+      MyLoot._awaitingLootAssignment = true
     end
   end
 end)

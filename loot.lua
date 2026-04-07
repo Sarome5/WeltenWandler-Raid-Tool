@@ -100,9 +100,12 @@ end
 --   "Du hast geplündert: [Item]."          → eigener Loot
 
 local LOOT_TYPE_MAP = {
-  ["Bedarf"]   = "MS",
-  ["Gier"]     = "OS",
-  ["Transmog"] = "Transmog",
+  ["Bedarf"]                    = "MS",
+  ["Primäre Spezialisierung"]   = "MS",
+  ["Gier"]                      = "OS",
+  ["Sekundäre Spezialisierung"] = "OS",
+  ["Transmog"]                  = "Transmog",
+  ["Aussehen"]                  = "Transmog",
 }
 
 -- Debug-Modus: nur lokal sichtbar, nie im Raid-Chat
@@ -114,6 +117,7 @@ local function LootDebug(msg)
 end
 
 function MyLoot.TryAutoAssignFromChat(msg)
+  if not MyLoot._awaitingLootAssignment then return end
   LootDebug("Chat: " .. msg)
 
   local itemLink = msg:match("|Hitem:.-|h.-|h")
@@ -131,22 +135,40 @@ function MyLoot.TryAutoAssignFromChat(msg)
     lootType = nil
     LootDebug("Muster 1 (Selbst): " .. player)
 
-  -- Muster 2: "[Spieler] erhält Beute: [Item]" → anderer Spieler
+  -- Muster 2a: "[Spieler] erhält Beute: [Item]" → anderer Spieler
   elseif msg:find("erhält Beute:") then
     player = msg:match("^(.+) erhält Beute:")
     if player then player = player:match("^%s*(.-)%s*$") end
-    LootDebug("Muster 2 (Anderer): " .. tostring(player))
+    LootDebug("Muster 2a (erhält): " .. tostring(player))
 
-  -- Muster 3: "[Spieler] gewinnt [Item] (Bedarf/Gier/Transmog)" → Würfelsystem
-  else
-    local winner, rollType = msg:match("^(.+) gewinnt .+%((.-)%)")
+  -- Muster 2b: "[Spieler] bekommt Beute: [Item]" → anderer Spieler
+  elseif msg:find("bekommt Beute:") then
+    player = msg:match("^(.+) bekommt Beute:")
+    if player then player = player:match("^%s*(.-)%s*$") end
+    LootDebug("Muster 2b (bekommt): " .. tostring(player))
+
+  -- Muster 3: "[Spieler] hat gewonnen (Bedarf/Primäre Spezialisierung/... – N, ...): [Item]"
+  elseif msg:find("hat gewonnen") then
+    local winner = msg:match("^(.+) hat gewonnen %(")
     if winner then
-      player   = winner:match("^%s*(.-)%s*$")
-      lootType = LOOT_TYPE_MAP[rollType] or "MS"
-      LootDebug("Muster 3 (Würfel): " .. tostring(player) .. " / " .. tostring(rollType) .. " → " .. lootType)
+      player = winner:match("^%s*(.-)%s*$")
+      -- Klammerinhalt plain-text gegen alle bekannten Typen prüfen (kein Unicode-en-dash-Problem)
+      local inner = msg:match("hat gewonnen %((.-)%)")
+      if inner then
+        for key, val in pairs(LOOT_TYPE_MAP) do
+          if inner:find(key, 1, true) then
+            lootType = val
+            break
+          end
+        end
+      end
+      LootDebug("Muster 3 (Würfel): " .. tostring(player) .. " → " .. lootType)
     else
       LootDebug("Kein Muster erkannt für: " .. msg)
     end
+
+  else
+    LootDebug("Kein Muster erkannt für: " .. msg)
   end
 
   if not player or player == "" then return end
@@ -176,21 +198,36 @@ function MyLoot.TryAutoAssignFromChat(msg)
   end
 
   -- Schritt 2: Fallback auf Base-ItemID (falls BonusID-String abweicht)
+  -- Nur wenn die ItemID eindeutig ist – bei Duplikaten lieber nicht raten
   if not assigned then
+    local matchCount = 0
     for _, boss in ipairs(MyLootDB.raid.bosses) do
       for _, loot in ipairs(boss.items) do
         if loot.status ~= "assigned" and loot.itemLink then
-          local lootItemID = loot.itemLink:match("item:(%d+)")
-          if lootItemID == chatItemID then
-            loot.assignedTo = player
-            loot.type       = lootType
-            loot.status     = "updated"
-            assigned = true
-            break
+          if loot.itemLink:match("item:(%d+)") == chatItemID then
+            matchCount = matchCount + 1
           end
         end
       end
-      if assigned then break end
+    end
+
+    if matchCount == 1 then
+      for _, boss in ipairs(MyLootDB.raid.bosses) do
+        for _, loot in ipairs(boss.items) do
+          if loot.status ~= "assigned" and loot.itemLink then
+            if loot.itemLink:match("item:(%d+)") == chatItemID then
+              loot.assignedTo = player
+              loot.type       = lootType
+              loot.status     = "updated"
+              assigned = true
+              break
+            end
+          end
+        end
+        if assigned then break end
+      end
+    else
+      LootDebug("Schritt 2 übersprungen: " .. matchCount .. "x ItemID " .. chatItemID .. " → mehrdeutig")
     end
   end
 
@@ -216,85 +253,99 @@ function MyLoot.HandleLoot(msg)
 end
 
 function MyLoot.HandleLootOpened()
+  if MyLoot._isLooting then return end
   MyLoot._isLooting = true
 
-  local boss = MyLoot.GetSelectedBoss()
-  if not boss then return end
+  -- Aktiven Loot-Boss nutzen (eingefroren bei ENCOUNTER_END), nicht den Dropdown-Stand
+  local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
+  local boss = idx and MyLootDB.raid.bosses[idx]
+  if not boss then
+    MyLoot._isLooting = false
+    return
+  end
+
   if not boss._lootInitialized then
-    boss._slotUIDs = {}
-    boss._lootUIDCounter = 0
+    boss._slotUIDs        = {}
+    boss._sentClientUIDs  = {}  -- verhindert Doppel-Send beim Retry (non-raidlead)
+    boss._lootUIDCounter  = 0
     boss._lootInitialized = true
   end
 
-  boss._slotUIDs = boss._slotUIDs or {}
-
   local numItems = GetNumLootItems()
 
+  -- Loot-Fenster bereits geschlossen (z.B. nach Retry) → nichts zu tun
+  if numItems == 0 then
+    MyLoot._isLooting = false
+    return
+  end
+
   for i = 1, numItems do
-    local link = GetLootSlotLink(i)
+    if LootSlotHasItem(i) then
+      -- GetLootSlotInfo liefert Qualität direkt aus dem Loot-Frame (kein Item-Cache nötig)
+      local texture, _, quantity, currencyID, quality = GetLootSlotInfo(i)
 
-    if link and link:find("|Hitem:") then
-      local _, _, quality = GetItemInfo(link)
+      if not texture then
+        -- Slot noch nicht gerendert → nächsten Frame neu versuchen (wie RCLC)
+        MyLoot._isLooting = false
+        C_Timer.After(0, MyLoot.HandleLootOpened)
+        return
+      end
 
-      if not quality then
-        -- Item-Daten noch nicht geladen → nachladen und nochmal versuchen
-        local item = Item:CreateFromItemLink(link)
-        item:ContinueOnItemLoad(function()
-          MyLoot.HandleLootOpened()
-        end)
-      elseif quality >= 3 then
+      -- Währungen und leere Slots überspringen
+      if not currencyID and quantity and quantity > 0 and quality and quality >= 3 then
+        local link = GetLootSlotLink(i)
+        if link and link:find("|Hitem:") then
+          -- Quelle des Loot-Slots (Boss-GUID) für Debug-Ausgabe
+          local _, sourceName = GetLootSourceInfo(i)
+          LootDebug(string.format("Slot %d: %s [Quelle: %s]", i, link:match("%[(.-)%]") or "?", sourceName or "?"))
 
+          local itemID = link:match("item:(%d+)")
+          local uid    = boss._slotUIDs[i]
 
-        local itemID = link:match("item:(%d+)")
-        local uid = boss._slotUIDs[i]
+          if not uid then
+            boss._lootUIDCounter = (boss._lootUIDCounter or 0) + 1
+            uid = itemID .. "-" .. boss._lootUIDCounter
+            boss._slotUIDs[i] = uid
+          end
 
-        if not uid then
-          boss._lootUIDCounter = (boss._lootUIDCounter or 0) + 1
-          uid = itemID .. "-" .. boss._lootUIDCounter
-          boss._slotUIDs[i] = uid
-        end
+          local exists = false
+          for _, existing in ipairs(boss.items) do
+            if existing.uid == uid then exists = true; break end
+          end
 
-        local exists = false
-        for _, existing in ipairs(boss.items) do
-          if existing.uid == uid then
-            exists = true
-            break
+          if not exists then
+            if MyLootDB.role == "raidlead" then
+              table.insert(boss.items, {
+                uid        = uid,
+                itemLink   = link,
+                slot       = i,
+                processed  = false,
+                session    = nil,
+                assignedTo = nil,
+                type       = nil,
+                status     = "new",
+                ui         = { selectedPlayer = nil, selectedType = "MS" }
+              })
+            elseif not boss._sentClientUIDs[uid] then
+              -- nur senden wenn noch nicht gesendet (Retry-Schutz)
+              boss._sentClientUIDs[uid] = true
+              MyLoot.SendClientLoot(link, uid)
+            end
           end
         end
-
-        if not exists then
-          if MyLootDB.role == "raidlead" then
-            table.insert(boss.items, {
-              uid = uid,
-              itemLink = link,
-              slot = i,
-              processed = false,
-              session = nil,
-              assignedTo = nil,
-              type = nil,
-              status = "new",
-              ui = {
-                selectedPlayer = nil,
-                selectedType = "MS"
-              }
-            })
-          else
-            MyLoot.SendClientLoot(link, uid)
-          end
-        end
-
       end
     end
-
   end
 
   MyLoot.ProcessLootTable()
-  C_Timer.After(1, function()
-    MyLoot._isLooting = false
-  end)
+
   if MyLootDB.role ~= "raidlead" then
     MyLoot.QueueMessage("MYLOOT_SYNC", "CLIENT_DONE", "RAID")
   end
+
+  C_Timer.After(1, function()
+    MyLoot._isLooting = false
+  end)
 end
 
 
@@ -588,14 +639,10 @@ function MyLoot.HandleSyncMessage(msg, sender)
         bossName = "Boss " .. bossIndex,
         items = {}
       }
-
       MyLootDB.raid.bosses[bossIndex] = boss
     end
 
-    local itemID = itemLink:match("item:(%d+)")
-
     local exists = false
-
     for _, l in ipairs(boss.items) do
       if l.uid == uid then
         exists = true
@@ -617,8 +664,6 @@ function MyLoot.HandleSyncMessage(msg, sender)
           selectedType = "MS"
         }
       })
-
-    else
     end
 
   elseif cmd == "CLIENT_LOOT" then

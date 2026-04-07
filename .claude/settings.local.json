@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Read(//c/Users/mkain/.claude/projects/**)"
+      "Read(//c/Users/mkain/.claude/projects/**)",
+      "Read(//e/battle.net/World of Warcraft/_retail_/Interface/AddOns/RCLootCouncil/**)",
+      "Read(//e/battle.net/World of Warcraft/_retail_/Interface/AddOns/**)"
     ],
     "additionalDirectories": [
       "C:\\Users\\mkain\\Documents\\Visual Code\\WRT Companion App"

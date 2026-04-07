@@ -4,13 +4,15 @@ MyLoot = MyLoot or {}
 -- MINIMAP BUTTON
 -- =========================
 
-local BUTTON_SIZE = 36
+local BUTTON_SIZE = 32
+local ICON_SIZE   = 20
 local RADIUS      = 80
 
 local function UpdatePosition(btn)
-  local angle = MyLootDB.minimapAngle or 225
-  local rad   = math.rad(angle)
-  btn:SetPoint("CENTER", Minimap, "CENTER", RADIUS * math.cos(rad), RADIUS * math.sin(rad))
+  local x = MyLootDB.minimapX or -56
+  local y = MyLootDB.minimapY or -56
+  btn:ClearAllPoints()
+  btn:SetPoint("CENTER", Minimap, "CENTER", x, y)
 end
 
 local function CreateMinimapButton()
@@ -18,22 +20,29 @@ local function CreateMinimapButton()
   btn:SetSize(BUTTON_SIZE, BUTTON_SIZE)
   btn:SetFrameStrata("MEDIUM")
   btn:SetFrameLevel(8)
+  btn:SetDontSavePosition(true)
 
-  -- Icon (das Logo ist bereits rund → keine Maske nötig)
-  local icon = btn:CreateTexture(nil, "ARTWORK")
+  -- Icon (zentriert, kleiner als Button → Ecken bleiben frei)
+  local icon = btn:CreateTexture(nil, "BACKGROUND")
   icon:SetTexture("Interface/AddOns/WeltenWandler_Raid_Tool/textures/minimap_icon.tga")
-  icon:SetAllPoints(btn)
+  icon:SetSize(ICON_SIZE, ICON_SIZE)
+  icon:SetPoint("CENTER", 0, 0)
+  -- Kreismaske damit Ecken der TGA ausgeblendet werden
+  icon:SetMask("Interface/CHARACTERFRAME/TempPortraitMask")
 
-  -- Highlight beim Hovern
-  local hl = btn:CreateTexture(nil, "HIGHLIGHT")
-  hl:SetTexture("Interface/Minimap/UI-Minimap-ZoomButton-Highlight")
-  hl:SetSize(BUTTON_SIZE + 8, BUTTON_SIZE + 8)
-  hl:SetPoint("CENTER", 0, 0)
-  hl:SetBlendMode("ADD")
+  -- Rand-Ring (wie MRT: überdeckt Ecken, gibt runden Look)
+  local border = btn:CreateTexture(nil, "ARTWORK")
+  border:SetTexture("Interface/Minimap/MiniMap-TrackingBorder")
+  border:SetTexCoord(0, 0.6, 0, 0.6)
+  border:SetAllPoints()
+
+  -- Highlight beim Hovern (WoW-API wie MRT)
+  btn:SetHighlightTexture("Interface/Minimap/UI-Minimap-ZoomButton-Highlight")
 
   -- =========================
   -- KLICK: Fenster toggeln
   -- =========================
+  btn:RegisterForClicks("anyUp")
   btn:SetScript("OnClick", function(_, mouseButton)
     if mouseButton == "LeftButton" then
       local ui = MyLoot.UI
@@ -66,7 +75,7 @@ local function CreateMinimapButton()
   end)
 
   -- =========================
-  -- DRAGGING
+  -- DRAGGING (X/Y wie MRT)
   -- =========================
   btn:RegisterForDrag("LeftButton")
 
@@ -77,8 +86,19 @@ local function CreateMinimapButton()
       local scale  = Minimap:GetEffectiveScale()
       cx, cy = cx / scale, cy / scale
 
-      local angle = math.deg(math.atan2(cy - my, cx - mx))
-      MyLootDB.minimapAngle = angle
+      local dx = cx - mx
+      local dy = cy - my
+
+      -- Auf Minimap-Rand einrasten (Radius begrenzen)
+      local dist = math.sqrt(dx * dx + dy * dy)
+      if dist > 0 then
+        local clamped = math.min(dist, RADIUS)
+        dx = dx / dist * clamped
+        dy = dy / dist * clamped
+      end
+
+      MyLootDB.minimapX = dx
+      MyLootDB.minimapY = dy
       UpdatePosition(self)
     end)
   end)
@@ -97,6 +117,13 @@ end
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_LOGIN")
 initFrame:SetScript("OnEvent", function()
-  MyLootDB.minimapAngle = MyLootDB.minimapAngle or 225
+  -- Alte minimapAngle-Daten migrieren
+  if MyLootDB.minimapAngle and not MyLootDB.minimapX then
+    local rad = math.rad(MyLootDB.minimapAngle)
+    MyLootDB.minimapX = RADIUS * math.cos(rad)
+    MyLootDB.minimapY = RADIUS * math.sin(rad)
+    MyLootDB.minimapAngle = nil
+  end
+
   MyLoot.minimapButton = CreateMinimapButton()
 end)
