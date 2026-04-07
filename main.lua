@@ -382,6 +382,9 @@ function MyLoot.Render()
   if ui.importFrame then
     ui.importFrame:SetShown(view == "import")
   end
+  if ui.statsScrollFrame then
+    ui.statsScrollFrame:SetShown(view == "stats")
+  end
 
   -- Icon nur im Loot-Tab sichtbar
   if ui.activeItemIcon then
@@ -422,15 +425,11 @@ function MyLoot.Render()
 
   elseif view == "raid" then
 
-    local txt = ui.prioPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    txt:SetPoint("CENTER")
-    txt:SetText("Raid View (coming soon)")
+    MyLoot.RenderRaidView()
 
   elseif view == "stats" then
 
-    local txt = ui.prioPanel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    txt:SetPoint("CENTER")
-    txt:SetText("Stats View (coming soon)")
+    MyLoot.RenderStatsView()
 
   elseif view == "import" then
 
