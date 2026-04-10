@@ -2,9 +2,31 @@ MyLoot = MyLoot or {}
 
 -- Zustand der Stats-Ansicht (persistent innerhalb Session)
 local statsState = {
-  view = "history",  -- "dropchance" | "player" | "history"
-  spec = "ms",       -- "ms" | "os" | "all"  (nur für "player")
+  view    = "history",   -- "history" | "player" | "dropchance"
+  diff    = "all",       -- "all" | "normal" | "heroic" | "mythic"
+  scope   = "all",       -- "all" | "ms" | "os"  (bei dropchance ignoriert)
+  patchId = nil,         -- nil = alle Patches, sonst Patch-ID (number)
 }
+
+-- Item-Name-Cache: nach Render einmal befüllen, dann per Timer neu rendern
+local _statsItemRetryPending = false
+
+local function TryGetItemName(itemID)
+  if not itemID then return "?" end
+  local name = GetItemInfo(itemID)
+  if name then return name end
+  -- Noch nicht im Cache → WoW anfordern, später neu rendern
+  if not _statsItemRetryPending then
+    _statsItemRetryPending = true
+    C_Timer.After(0.8, function()
+      _statsItemRetryPending = false
+      if MyLoot.currentView == "stats" and MyLoot.UI and MyLoot.UI:IsShown() then
+        MyLoot.Render()
+      end
+    end)
+  end
+  return "Item #" .. itemID
+end
 
 -- =========================
 -- HILFSFUNKTIONEN
@@ -13,10 +35,253 @@ local function GetClassColor(playerName)
   local classColor = MyLootDB.knownClasses and MyLootDB.knownClasses[playerName]
   if classColor and RAID_CLASS_COLORS[classColor] then
     local c = RAID_CLASS_COLORS[classColor]
-    return c.r, c.g, c.b, c.colorStr
+    return c.r, c.g, c.b
   end
-  return 1, 1, 1, "ffffffff"
+  return 1, 1, 1
 end
+
+-- difficulty kommt aus der DB als "normal"/"heroic"/"mythic" (englisch lowercase)
+local DIFF_LABEL = {
+  normal = "Normal",
+  heroic = "Heroisch",
+  mythic = "Mythisch",
+}
+local DIFF_COLOR = {
+  normal  = { 0.3, 0.9, 0.3 },
+  heroic  = { 0.2, 0.5, 1.0 },
+  mythic  = { 0.6, 0.2, 1.0 },
+}
+
+local function IsMS(entry)
+  local t = (entry.lootType or ""):lower()
+  return t == "ms" or t == "main" or t == "mainspec"
+end
+
+-- Aggregiert Dropchance-Daten live aus der lootHistory.
+-- patches: data.patches (für vollständige Item-Liste inkl. 0%-Items wenn ein Patch gewählt ist)
+local function AggregateDropchance(lootHistory, diff, patchId, patches)
+  local bossKills = {}
+  local itemDrops = {}
+
+  for _, raid in ipairs(lootHistory or {}) do
+    local skip = false
+    local raidDiff = (raid.difficulty or ""):lower()
+    if diff ~= "all" and raidDiff ~= diff then skip = true end
+    if not skip and patchId ~= nil then
+      local match = false
+      for _, pid in ipairs(raid.patchIds or {}) do
+        if pid == patchId then match = true; break end
+      end
+      if not match then skip = true end
+    end
+    if not skip then
+      -- Boss-Kills: jeder Boss zählt pro Raid genau einmal
+      local seen = {}
+      for _, e in ipairs(raid.entries or {}) do
+        if e.boss and not seen[e.boss] then
+          seen[e.boss] = true
+          bossKills[e.boss] = (bossKills[e.boss] or 0) + 1
+        end
+      end
+      -- Item-Drops pro Boss
+      for _, e in ipairs(raid.entries or {}) do
+        if e.boss and e.itemID then
+          if not itemDrops[e.boss] then itemDrops[e.boss] = {} end
+          itemDrops[e.boss][e.itemID] = (itemDrops[e.boss][e.itemID] or 0) + 1
+        end
+      end
+    end
+  end
+
+  -- Wenn ein Patch gewählt: vollständige Loot-Tabelle des Patches als Basis verwenden.
+  -- Items die nie gedroppt sind erscheinen mit drops=0 (0%-Dropchance).
+  if patchId ~= nil and patches then
+    for _, p in ipairs(patches) do
+      if p.id == patchId and p.bossItems then
+        for bossName, itemIDs in pairs(p.bossItems) do
+          -- Boss-Eintrag anlegen falls er noch nicht aus lootHistory bekannt ist
+          if not bossKills[bossName] then bossKills[bossName] = 0 end
+          if not itemDrops[bossName] then itemDrops[bossName] = {} end
+          for _, itemID in ipairs(itemIDs) do
+            -- Nur eintragen wenn das Item noch nicht als Drop bekannt ist
+            if not itemDrops[bossName][itemID] then
+              itemDrops[bossName][itemID] = 0
+            end
+          end
+        end
+        break
+      end
+    end
+  end
+
+  local result = {}
+  for bossName, kills in pairs(bossKills) do
+    local items = {}
+    for itemID, drops in pairs(itemDrops[bossName] or {}) do
+      table.insert(items, {
+        itemID = itemID,
+        drops  = drops,
+        kills  = kills,
+        chance = kills > 0 and (drops / kills) or 0,
+      })
+    end
+    -- Sortierung: erst nach Drops absteigend, dann nach ItemID
+    table.sort(items, function(a, b)
+      if (a.drops or 0) ~= (b.drops or 0) then
+        return (a.drops or 0) > (b.drops or 0)
+      end
+      return (a.itemID or 0) < (b.itemID or 0)
+    end)
+    table.insert(result, { bossName = bossName, items = items })
+  end
+  table.sort(result, function(a, b) return (a.bossName or "") < (b.bossName or "") end)
+  return result
+end
+
+-- Aggregiert Spielerstatistiken live aus der lootHistory
+local function AggregatePlayerStats(lootHistory, diff, patchId)
+  local players   = {}
+  local totalRaids = 0
+  local totalLoot  = 0
+
+  for _, raid in ipairs(lootHistory or {}) do
+    local skip = false
+    local raidDiff = (raid.difficulty or ""):lower()
+    if diff ~= "all" and raidDiff ~= diff then skip = true end
+    if not skip and patchId ~= nil then
+      local match = false
+      for _, pid in ipairs(raid.patchIds or {}) do
+        if pid == patchId then match = true; break end
+      end
+      if not match then skip = true end
+    end
+    if not skip then
+      totalRaids = totalRaids + 1
+      local raidKey = (raid.raidName or "") .. "|" .. (raid.date or "")
+      for _, e in ipairs(raid.entries or {}) do
+        if e.player then
+          if not players[e.player] then
+            players[e.player] = { lootMS = 0, lootOS = 0, raids = {} }
+          end
+          local pd = players[e.player]
+          if IsMS(e) then pd.lootMS = pd.lootMS + 1
+          else             pd.lootOS = pd.lootOS + 1 end
+          pd.raids[raidKey] = true
+          totalLoot = totalLoot + 1
+        end
+      end
+    end
+  end
+
+  local result = {}
+  for playerName, pd in pairs(players) do
+    local lootMS    = pd.lootMS
+    local lootOS    = pd.lootOS
+    local lootTotal = lootMS + lootOS
+    local attended  = 0
+    for _ in pairs(pd.raids) do attended = attended + 1 end
+    table.insert(result, {
+      playerName  = playerName,
+      wowClass    = MyLootDB.knownClasses and MyLootDB.knownClasses[playerName] or nil,
+      lootTotal   = lootTotal,
+      lootMS      = lootMS,
+      lootOS      = lootOS,
+      raidsTotal  = totalRaids,
+      avgPerRaid  = totalRaids > 0 and (lootTotal / totalRaids) or 0,
+      avgAttended = attended   > 0 and (lootTotal / attended)   or 0,
+      percentage  = totalLoot  > 0 and (lootTotal / totalLoot * 100) or 0,
+    })
+  end
+  table.sort(result, function(a, b) return (a.lootTotal or 0) > (b.lootTotal or 0) end)
+  return result
+end
+
+-- =========================
+-- DROPDOWN-HELPER
+-- =========================
+local function CreateDropdown(parent, x, y, w, items, currentKey, onSelect)
+  local btn = CreateFrame("Button", nil, parent)
+  btn:SetSize(w, 22)
+  btn:SetPoint("TOPLEFT", parent, "TOPLEFT", x, y)
+
+  local bg = btn:CreateTexture(nil, "BACKGROUND")
+  bg:SetAllPoints()
+  bg:SetColorTexture(0.08, 0.08, 0.08, 0.9)
+
+  local border = btn:CreateTexture(nil, "BORDER")
+  border:SetAllPoints()
+  border:SetColorTexture(0.3, 0.25, 0.0, 0.6)
+
+  local label = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  label:SetPoint("LEFT", 6, 0)
+  label:SetPoint("RIGHT", -16, 0)
+  label:SetJustifyH("LEFT")
+  label:SetTextColor(0.9, 0.9, 0.9)
+
+  local arrow = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+  arrow:SetPoint("RIGHT", -4, 0)
+  arrow:SetTextColor(0.6, 0.6, 0.6)
+  arrow:SetText("▾")
+
+  local function SetLabel(key)
+    for _, item in ipairs(items) do
+      if item.key == key then label:SetText(item.label); return end
+    end
+    label:SetText("?")
+  end
+  SetLabel(currentKey)
+
+  local popup = CreateFrame("Frame", nil, UIParent, "BackdropTemplate")
+  popup:SetFrameStrata("FULLSCREEN_DIALOG")
+  popup:SetFrameLevel(9999)
+  popup:SetWidth(w)
+  popup:SetBackdrop({ bgFile = "Interface/Tooltips/UI-Tooltip-Background" })
+  popup:SetBackdropColor(0.05, 0.05, 0.05, 0.97)
+  popup:Hide()
+
+  local rowH = 20
+  popup:SetHeight(#items * rowH + 6)
+
+  for i, item in ipairs(items) do
+    local row = CreateFrame("Button", nil, popup)
+    row:SetSize(w, rowH)
+    row:SetPoint("TOPLEFT", 0, -3 - (i - 1) * rowH)
+
+    local rowBg = row:CreateTexture(nil, "BACKGROUND")
+    rowBg:SetAllPoints()
+    rowBg:SetColorTexture(1, 1, 1, 0)
+
+    local rowLabel = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    rowLabel:SetPoint("LEFT", 8, 0)
+    rowLabel:SetTextColor(0.85, 0.85, 0.85)
+    rowLabel:SetText(item.label)
+
+    local rowKey = item.key
+    row:SetScript("OnEnter", function() rowBg:SetColorTexture(1, 0.82, 0, 0.12) end)
+    row:SetScript("OnLeave", function() rowBg:SetColorTexture(1, 1, 1, 0) end)
+    row:SetScript("OnClick", function()
+      SetLabel(rowKey)
+      popup:Hide()
+      onSelect(rowKey)
+    end)
+  end
+
+  btn:SetScript("OnClick", function()
+    if popup:IsShown() then
+      popup:Hide()
+    else
+      local ax, ay = btn:GetLeft(), btn:GetBottom()
+      popup:ClearAllPoints()
+      popup:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", ax, ay)
+      popup:Show()
+    end
+  end)
+
+  btn._popup  = popup
+  btn._setLbl = SetLabel
+  return btn
+end
+
 
 -- =========================
 -- RENDER STATS VIEW
@@ -35,11 +300,9 @@ function MyLoot.RenderStatsView()
       local cur = self:GetVerticalScroll()
       self:SetVerticalScroll(math.max(0, cur - delta * 20))
     end)
-
     local child = CreateFrame("Frame", nil, sf)
     child:SetSize(ui.content:GetWidth(), 1)
     sf:SetScrollChild(child)
-
     ui.statsScrollFrame = sf
     ui.statsScrollChild = child
   end
@@ -47,7 +310,7 @@ function MyLoot.RenderStatsView()
   ui.statsScrollFrame:Show()
   ui.statsScrollFrame:SetVerticalScroll(0)
 
-  -- ScrollChild komplett neu erstellen (verhindert Stack Overflow durch akkumulierte Regions)
+  -- ScrollChild komplett neu erstellen (verhindert Stack Overflow)
   if ui.statsScrollChild then
     ui.statsScrollChild:Hide()
     ui.statsScrollChild:SetParent(nil)
@@ -58,92 +321,87 @@ function MyLoot.RenderStatsView()
   ui.statsScrollChild = child
 
   -- =========================
-  -- TAB-LEISTE (topPanel)
+  -- FILTER-LEISTE (topPanel)
   -- =========================
-  -- Alte Tab-Buttons aufräumen
   if ui.statsTabButtons then
-    for _, b in ipairs(ui.statsTabButtons) do b:Hide() end
+    for _, b in ipairs(ui.statsTabButtons) do
+      if b._popup then b._popup:Hide() end
+      b:Hide()
+    end
   end
   ui.statsTabButtons = {}
 
+  -- ── Ansichts-Tabs ────────────────────────────────────
   local tabs = {
-    { key = "dropchance", label = "Dropchance" },
+    { key = "history",    label = "Loothistorie"     },
     { key = "player",     label = "Loot pro Spieler" },
-    { key = "history",    label = "Loothistorie" },
+    { key = "dropchance", label = "Dropchance"       },
   }
-
   local tabX = 0
   for _, tab in ipairs(tabs) do
     local btn = CreateFrame("Button", nil, ui.topPanel)
     btn:SetSize(130, 28)
-    btn:SetPoint("BOTTOMLEFT", ui.topPanel, "BOTTOMLEFT", tabX + 10, 6)
+    btn:SetPoint("TOPLEFT", ui.topPanel, "TOPLEFT", tabX + 10, -8)
 
     local isActive = (statsState.view == tab.key)
-
     local bg = btn:CreateTexture(nil, "BACKGROUND")
     bg:SetAllPoints()
     bg:SetColorTexture(isActive and 0.15 or 0.08, isActive and 0.12 or 0.08, 0, isActive and 0.9 or 0.5)
 
     local bar = btn:CreateTexture(nil, "BORDER")
-    bar:SetPoint("BOTTOMLEFT", 0, 0)
-    bar:SetPoint("BOTTOMRIGHT", 0, 0)
-    bar:SetHeight(2)
+    bar:SetPoint("BOTTOMLEFT", 0, 0); bar:SetPoint("BOTTOMRIGHT", 0, 0); bar:SetHeight(2)
     bar:SetColorTexture(1, 0.82, 0, isActive and 1 or 0)
 
     local lbl = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    lbl:SetAllPoints()
-    lbl:SetJustifyH("CENTER")
+    lbl:SetAllPoints(); lbl:SetJustifyH("CENTER")
     lbl:SetTextColor(isActive and 1 or 0.7, isActive and 0.82 or 0.7, isActive and 0 or 0.7)
     lbl:SetText(tab.label)
 
     local key = tab.key
-    btn:SetScript("OnClick", function()
-      statsState.view = key
-      MyLoot.Render()
-    end)
-
+    btn:SetScript("OnClick", function() statsState.view = key; MyLoot.Render() end)
     table.insert(ui.statsTabButtons, btn)
     tabX = tabX + 134
   end
 
-  -- Spec-Filter (nur bei "player")
-  if ui.statsSpecButtons then
-    for _, b in ipairs(ui.statsSpecButtons) do b:Hide() end
+  -- ── Difficulty-Dropdown ──────────────────────────────
+  local diffItems = {
+    { key = "all",    label = "Alle Schwierigkeiten" },
+    { key = "normal", label = "Normal"  },
+    { key = "heroic", label = "Heroisch"},
+    { key = "mythic", label = "Mythisch"},
+  }
+  local diffBtn = CreateDropdown(ui.topPanel, 10, -44, 155, diffItems, statsState.diff,
+    function(key) statsState.diff = key; MyLoot.Render() end)
+  table.insert(ui.statsTabButtons, diffBtn)
+
+  -- ── Scope-Dropdown (nicht bei dropchance) ────────────
+  local scopeItems = {
+    { key = "all", label = "MS + OS"   },
+    { key = "ms",  label = "Main-Spec" },
+    { key = "os",  label = "Off-Spec"  },
+  }
+  local scopeBtn = CreateDropdown(ui.topPanel, 173, -44, 125, scopeItems, statsState.scope,
+    function(key) statsState.scope = key; MyLoot.Render() end)
+  table.insert(ui.statsTabButtons, scopeBtn)
+  if statsState.view == "dropchance" then
+    scopeBtn:Hide()
+    if scopeBtn._popup then scopeBtn._popup:Hide() end
   end
-  ui.statsSpecButtons = {}
 
-  if statsState.view == "player" then
-    local specs = {
-      { key = "ms",  label = "Main-Spec" },
-      { key = "os",  label = "Off-Spec"  },
-      { key = "all", label = "Overall"   },
-    }
-    local sx = 415
-    for _, sp in ipairs(specs) do
-      local sbtn = CreateFrame("Button", nil, ui.topPanel)
-      sbtn:SetSize(90, 22)
-      sbtn:SetPoint("BOTTOMLEFT", ui.topPanel, "BOTTOMLEFT", sx, 8)
-
-      local isActive = (statsState.spec == sp.key)
-      local sbg = sbtn:CreateTexture(nil, "BACKGROUND")
-      sbg:SetAllPoints()
-      sbg:SetColorTexture(isActive and 0.2 or 0.08, isActive and 0.18 or 0.08, 0, isActive and 0.9 or 0.4)
-
-      local slbl = sbtn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-      slbl:SetAllPoints()
-      slbl:SetJustifyH("CENTER")
-      slbl:SetTextColor(isActive and 1 or 0.6, isActive and 0.82 or 0.6, isActive and 0 or 0.6)
-      slbl:SetText(sp.label)
-
-      local skey = sp.key
-      sbtn:SetScript("OnClick", function()
-        statsState.spec = skey
+  -- ── Patch-Dropdown ───────────────────────────────────
+  local patches = (data and data.patches) or {}
+  if #patches > 0 then
+    local patchItems = { { key = "all", label = "Alle Patches" } }
+    for _, p in ipairs(patches) do
+      table.insert(patchItems, { key = tostring(p.id), label = p.name })
+    end
+    local currentPatchKey = statsState.patchId and tostring(statsState.patchId) or "all"
+    local patchBtn = CreateDropdown(ui.topPanel, 306, -44, 155, patchItems, currentPatchKey,
+      function(key)
+        statsState.patchId = (key == "all") and nil or tonumber(key)
         MyLoot.Render()
       end)
-
-      table.insert(ui.statsSpecButtons, sbtn)
-      sx = sx + 94
-    end
+    table.insert(ui.statsTabButtons, patchBtn)
   end
 
   -- Keine Daten
@@ -160,12 +418,15 @@ function MyLoot.RenderStatsView()
   -- =========================
   -- INHALT je nach Ansicht
   -- =========================
+  local lootHistory = data.lootHistory or {}
   if statsState.view == "dropchance" then
-    MyLoot.RenderStatsDropchance(child, data)
+    local dcList = AggregateDropchance(lootHistory, statsState.diff, statsState.patchId, data.patches)
+    MyLoot.RenderStatsDropchance(child, dcList)
   elseif statsState.view == "player" then
-    MyLoot.RenderStatsPlayer(child, data, statsState.spec)
+    local psList = AggregatePlayerStats(lootHistory, statsState.diff, statsState.patchId)
+    MyLoot.RenderStatsPlayer(child, psList, statsState.scope)
   else
-    MyLoot.RenderStatsHistory(child, data)
+    MyLoot.RenderStatsHistory(child, data, statsState.diff, statsState.scope, statsState.patchId)
   end
 end
 
@@ -173,11 +434,11 @@ end
 -- =========================
 -- DROPCHANCE
 -- =========================
-function MyLoot.RenderStatsDropchance(child, data)
+function MyLoot.RenderStatsDropchance(child, bossList)
   local y = -10
   local W = child:GetWidth() or 660
 
-  if not data.dropchance or #data.dropchance == 0 then
+  if not bossList or #bossList == 0 then
     local h = child:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     h:SetPoint("TOPLEFT", 10, y)
     h:SetText("Keine Dropchance-Daten vorhanden.")
@@ -185,76 +446,83 @@ function MyLoot.RenderStatsDropchance(child, data)
     return
   end
 
-  for _, boss in ipairs(data.dropchance) do
-    -- Boss-Header
-    local bh = child:CreateTexture(nil, "BACKGROUND")
-    bh:SetPoint("TOPLEFT",  0, y)
-    bh:SetPoint("TOPRIGHT", 0, y)
-    bh:SetHeight(22)
-    bh:SetColorTexture(0.12, 0.10, 0.02, 1)
+  local hadAny = false
 
-    local bLabel = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    bLabel:SetPoint("TOPLEFT", 10, y - 3)
-    bLabel:SetTextColor(1, 0.82, 0)
-    bLabel:SetText(boss.bossName or "Boss")
-    y = y - 22
+  for _, boss in ipairs(bossList) do
+    local items = boss.items or {}
+    if #items > 0 then
+      hadAny = true
 
-    -- Spalten-Header
-    local function H(text, xOff, justify)
-      local f = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-      f:SetPoint("TOPLEFT", xOff, y)
-      f:SetTextColor(0.6, 0.6, 0.6)
-      f:SetJustifyH(justify or "LEFT")
-      f:SetText(text)
-    end
-    H("Item",     10)
-    H("Drops",    W - 200, "RIGHT")
-    H("Kills",    W - 140, "RIGHT")
-    H("Chance",   W -  70, "RIGHT")
-    y = y - 18
+      -- Boss-Header
+      local bh = child:CreateTexture(nil, "BACKGROUND")
+      bh:SetPoint("TOPLEFT", 0, y); bh:SetPoint("TOPRIGHT", 0, y); bh:SetHeight(22)
+      bh:SetColorTexture(0.12, 0.10, 0.02, 1)
 
-    if boss.items then
-      for i, item in ipairs(boss.items) do
+      local bLabel = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+      bLabel:SetPoint("TOPLEFT", 10, y - 3)
+      bLabel:SetTextColor(1, 0.82, 0)
+      bLabel:SetText(boss.bossName or "Boss")
+      y = y - 22
+
+      -- Spalten-Header
+      local function H(text, xOff, justify)
+        local f = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        f:SetPoint("TOPLEFT", xOff, y); f:SetTextColor(0.6, 0.6, 0.6)
+        f:SetJustifyH(justify or "LEFT"); f:SetText(text)
+      end
+      H("Item",   10); H("Drops", W-200, "RIGHT"); H("Kills", W-140, "RIGHT"); H("Chance", W-70, "RIGHT")
+      y = y - 18
+
+      for i, item in ipairs(items) do
         if i % 2 == 0 then
-          local stripe = child:CreateTexture(nil, "BACKGROUND")
-          stripe:SetPoint("TOPLEFT",  0, y)
-          stripe:SetPoint("TOPRIGHT", 0, y)
-          stripe:SetHeight(20)
-          stripe:SetColorTexture(1, 1, 1, 0.03)
+          local s = child:CreateTexture(nil, "BACKGROUND")
+          s:SetPoint("TOPLEFT", 0, y); s:SetPoint("TOPRIGHT", 0, y); s:SetHeight(20)
+          s:SetColorTexture(1, 1, 1, 0.03)
         end
 
         local iName = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         iName:SetPoint("TOPLEFT", 10, y - 2)
         iName:SetTextColor(0.8, 0.8, 1)
-        iName:SetText(item.itemName or ("Item " .. (item.itemID or "?")))
+        iName:SetText(TryGetItemName(item.itemID))
 
-        local function RightCol(text, xOff)
+        local function RCol(text, xOff, cr, cg, cb)
           local f = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-          f:SetPoint("TOPLEFT", xOff, y - 2)
-          f:SetJustifyH("RIGHT")
-          f:SetWidth(60)
-          f:SetText(tostring(text or "—"))
+          f:SetPoint("TOPLEFT", xOff, y - 2); f:SetJustifyH("RIGHT"); f:SetWidth(60)
+          f:SetTextColor(cr or 0.7, cg or 0.7, cb or 0.7)
+          f:SetText(tostring(text ~= nil and text or "—"))
         end
-        RightCol(item.drops,  W - 220)
-        RightCol(item.kills,  W - 160)
+        -- Bei kills=0 → noch kein Raid mit diesem Boss → gedimmt anzeigen
+        local neverKilled = (item.kills or 0) == 0
+        RCol(item.drops, W - 220, neverKilled and 0.4 or 0.8, neverKilled and 0.4 or 0.8, neverKilled and 0.4 or 0.8)
+        RCol(item.kills, W - 160, neverKilled and 0.4 or 0.8, neverKilled and 0.4 or 0.8, neverKilled and 0.4 or 0.8)
 
-        local chanceColor = { 1, 1, 1 }
-        local chance = item.chance or 0
-        if chance >= 70 then chanceColor = { 0.2, 1, 0.2 }
-        elseif chance >= 40 then chanceColor = { 1, 0.82, 0 }
-        else chanceColor = { 1, 0.5, 0.5 } end
-
+        -- chance = drops/kills → * 100 für Prozentanzeige; kills=0 → "—"
         local cf = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        cf:SetPoint("TOPLEFT", W - 100, y - 2)
-        cf:SetJustifyH("RIGHT")
-        cf:SetWidth(60)
-        cf:SetTextColor(unpack(chanceColor))
-        cf:SetText(string.format("%.1f%%", chance))
-
+        cf:SetPoint("TOPLEFT", W - 100, y - 2); cf:SetJustifyH("RIGHT"); cf:SetWidth(60)
+        if neverKilled then
+          cf:SetTextColor(0.4, 0.4, 0.4)
+          cf:SetText("—")
+        else
+          local chancePct = (item.chance or 0) * 100
+          local cc
+          if chancePct >= 70 then cc = {0.2, 1, 0.2}
+          elseif chancePct >= 40 then cc = {1, 0.82, 0}
+          else cc = {1, 0.5, 0.5} end
+          cf:SetTextColor(unpack(cc))
+          cf:SetText(string.format("%.1f%%", chancePct))
+        end
         y = y - 20
       end
+      y = y - 8
     end
-    y = y - 8
+  end
+
+  if not hadAny then
+    local h = child:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    h:SetPoint("TOPLEFT", 10, -10)
+    h:SetText("Keine Items für den gewählten Filter.")
+    child:SetHeight(40)
+    return
   end
 
   child:SetHeight(math.abs(y) + 20)
@@ -264,11 +532,11 @@ end
 -- =========================
 -- LOOT PRO SPIELER
 -- =========================
-function MyLoot.RenderStatsPlayer(child, data, spec)
+function MyLoot.RenderStatsPlayer(child, playerList, scope)
   local y = -10
   local W = child:GetWidth() or 660
 
-  if not data.playerStats or #data.playerStats == 0 then
+  if not playerList or #playerList == 0 then
     local h = child:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
     h:SetPoint("TOPLEFT", 10, y)
     h:SetText("Keine Spieler-Daten vorhanden.")
@@ -276,49 +544,32 @@ function MyLoot.RenderStatsPlayer(child, data, spec)
     return
   end
 
-  -- Header
   local function H(text, xOff)
     local f = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    f:SetPoint("TOPLEFT", xOff, y)
-    f:SetTextColor(1, 0.82, 0)
-    f:SetText(text)
+    f:SetPoint("TOPLEFT", xOff, y); f:SetTextColor(1, 0.82, 0); f:SetText(text)
   end
-  H("Charakter",         10)
-  H("Loot",             200)
-  H("Raids",            260)
-  H("Ø / Raid",         340)
-  H("Ø / teilgen.",     430)
-  H("Anteil",           520)
+  local lootHeader = scope == "ms" and "MS" or (scope == "os" and "OS" or "Loot")
+  H("Charakter", 10); H(lootHeader, 200); H("MS", 260); H("OS", 300)
+  H("Raids", 340); H("Ø/Raid", 420); H("Ø/teilgen.", 500); H("Anteil", 580)
   y = y - 4
 
   local hline = child:CreateTexture(nil, "ARTWORK")
   hline:SetColorTexture(1, 0.82, 0, 0.3)
-  hline:SetPoint("TOPLEFT",  0, y)
-  hline:SetPoint("TOPRIGHT", 0, y)
-  hline:SetHeight(1)
+  hline:SetPoint("TOPLEFT", 0, y); hline:SetPoint("TOPRIGHT", 0, y); hline:SetHeight(1)
   y = y - 18
 
-  for i, ps in ipairs(data.playerStats) do
-    -- Loot-Wert je nach Spec-Filter
-    local lootVal
-    if spec == "ms" then
-      lootVal = ps.lootMS or 0
-    elseif spec == "os" then
-      lootVal = ps.lootOS or 0
-    else
-      lootVal = ps.lootTotal or 0
-    end
+  for i, ps in ipairs(playerList) do
+    local lootVal = scope == "ms" and (ps.lootMS or 0)
+                 or scope == "os" and (ps.lootOS or 0)
+                 or (ps.lootTotal or 0)
 
     if i % 2 == 0 then
-      local stripe = child:CreateTexture(nil, "BACKGROUND")
-      stripe:SetPoint("TOPLEFT",  0, y)
-      stripe:SetPoint("TOPRIGHT", 0, y)
-      stripe:SetHeight(20)
-      stripe:SetColorTexture(1, 1, 1, 0.03)
+      local s = child:CreateTexture(nil, "BACKGROUND")
+      s:SetPoint("TOPLEFT", 0, y); s:SetPoint("TOPRIGHT", 0, y); s:SetHeight(20)
+      s:SetColorTexture(1, 1, 1, 0.03)
     end
 
     local r, g, b = GetClassColor(ps.playerName)
-
     local function Col(text, xOff, cr, cg, cb)
       local f = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
       f:SetPoint("TOPLEFT", xOff, y - 2)
@@ -326,28 +577,23 @@ function MyLoot.RenderStatsPlayer(child, data, spec)
       f:SetText(tostring(text or "—"))
     end
 
-    Col(ps.playerName or "?",                               10,  r, g, b)
-    Col(lootVal,                                           200)
-    Col(string.format("%d (%.0f%%)",
-      ps.raids or 0,
-      ps.raidsTotal and ps.raids and (ps.raids / ps.raidsTotal * 100) or 0),
-                                                           260,  0.7, 0.7, 0.7)
-    Col(string.format("%.2f", ps.avgPerRaid   or 0),       340)
-    Col(string.format("%.2f", ps.avgAttended  or 0),       430)
+    Col(ps.playerName or "?",   10, r, g, b)
+    Col(lootVal,                200)
+    Col(ps.lootMS or 0,         260, 0.3, 0.9, 0.3)
+    Col(ps.lootOS or 0,         300, 0.6, 0.6, 0.6)
+    Col(string.format("%d/%d", 0, ps.raidsTotal or 0), 340, 0.7, 0.7, 0.7)
+    Col(string.format("%.2f", ps.avgPerRaid  or 0),    420)
+    Col(string.format("%.2f", ps.avgAttended or 0),    500)
 
-    -- Prozent-Balken
-    local pct = ps.percentage or 0
+    local pct  = ps.percentage or 0
     local barW = math.max(2, math.min(120, pct * 1.2))
-    local bar = child:CreateTexture(nil, "ARTWORK")
-    bar:SetPoint("TOPLEFT", 520, y - 4)
-    bar:SetSize(barW, 12)
+    local bar  = child:CreateTexture(nil, "ARTWORK")
+    bar:SetPoint("TOPLEFT", 580, y - 4); bar:SetSize(barW, 12)
     bar:SetColorTexture(0.2, 0.6, 0.2, 0.8)
 
     local pctLabel = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    pctLabel:SetPoint("TOPLEFT", 648, y - 2)
-    pctLabel:SetTextColor(0.7, 0.7, 0.7)
+    pctLabel:SetPoint("TOPLEFT", 706, y - 2); pctLabel:SetTextColor(0.7, 0.7, 0.7)
     pctLabel:SetText(string.format("%.1f%%", pct))
-
     y = y - 20
   end
 
@@ -358,7 +604,7 @@ end
 -- =========================
 -- LOOTHISTORIE
 -- =========================
-function MyLoot.RenderStatsHistory(child, data)
+function MyLoot.RenderStatsHistory(child, data, diff, scope, patchId)
   local y = -10
   local W = child:GetWidth() or 660
 
@@ -370,114 +616,116 @@ function MyLoot.RenderStatsHistory(child, data)
     return
   end
 
-  local diffColors = {
-    ["Normal"]    = { 0.3, 0.9, 0.3 },
-    ["Heroisch"]  = { 0.2, 0.5, 1.0 },
-    ["Mythisch"]  = { 0.6, 0.2, 1.0 },
-  }
-
-  local typeColors = {
-    ["MS"] = { 0.2, 0.8, 1.0 },
-    ["OS"] = { 0.5, 0.5, 0.5 },
-  }
+  local typeColors = { ms = {0.2, 0.8, 1.0}, os = {0.5, 0.5, 0.5} }
+  local hadAnyRaid = false
 
   for _, raid in ipairs(data.lootHistory) do
-    -- Raid-Header-Zeile
-    local rh = child:CreateTexture(nil, "BACKGROUND")
-    rh:SetPoint("TOPLEFT",  0, y)
-    rh:SetPoint("TOPRIGHT", 0, y)
-    rh:SetHeight(22)
-    rh:SetColorTexture(0.10, 0.08, 0.02, 1)
+    local raidDiff = (raid.difficulty or ""):lower()
 
-    local rName = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-    rName:SetPoint("TOPLEFT", 10, y - 3)
-    rName:SetTextColor(1, 0.82, 0)
-    rName:SetText(raid.raidName or "Raid")
-
-    if raid.date then
-      local rDate = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-      rDate:SetPoint("TOPLEFT", 360, y - 3)
-      rDate:SetTextColor(0.7, 0.7, 0.7)
-      rDate:SetText(raid.date)
-    end
-
-    -- Schwierigkeits-Badge
-    if raid.difficulty then
-      local dc = diffColors[raid.difficulty] or { 0.7, 0.7, 0.7 }
-      local badge = child:CreateTexture(nil, "ARTWORK")
-      badge:SetPoint("TOPLEFT", W - 100, y - 1)
-      badge:SetSize(80, 16)
-      badge:SetColorTexture(dc[1] * 0.3, dc[2] * 0.3, dc[3] * 0.3, 0.9)
-
-      local dLabel = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-      dLabel:SetPoint("TOPLEFT", W - 100, y - 3)
-      dLabel:SetWidth(80)
-      dLabel:SetJustifyH("CENTER")
-      dLabel:SetTextColor(unpack(dc))
-      dLabel:SetText(raid.difficulty)
-    end
-
-    y = y - 22
-
-    -- Einträge des Raids
-    if raid.entries and #raid.entries > 0 then
-      -- Spalten-Header
-      local function H(text, xOff)
-        local f = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        f:SetPoint("TOPLEFT", xOff, y - 2)
-        f:SetTextColor(0.5, 0.5, 0.5)
-        f:SetText(text)
+    -- Filter
+    local skip = false
+    if diff ~= "all" and raidDiff ~= diff then skip = true end
+    if not skip and patchId ~= nil then
+      local patchMatch = false
+      for _, pid in ipairs(raid.patchIds or {}) do
+        if pid == patchId then patchMatch = true; break end
       end
-      H("Zeitpunkt",  10)
-      H("Boss",       100)
-      H("Item",       260)
-      H("Charakter",  520)
-      H("Typ",        620)
-      y = y - 18
+      if not patchMatch then skip = true end
+    end
 
-      for i, entry in ipairs(raid.entries) do
-        if i % 2 == 0 then
-          local stripe = child:CreateTexture(nil, "BACKGROUND")
-          stripe:SetPoint("TOPLEFT",  0, y)
-          stripe:SetPoint("TOPRIGHT", 0, y)
-          stripe:SetHeight(18)
-          stripe:SetColorTexture(1, 1, 1, 0.03)
+    if not skip then
+      -- Scope-Filter auf Eintragsebene
+      local entries = {}
+      for _, e in ipairs(raid.entries or {}) do
+        local eIsMS = IsMS(e)
+        if scope == "ms" and not eIsMS then
+        elseif scope == "os" and eIsMS then
+        else table.insert(entries, e) end
+      end
+
+      if #entries > 0 then
+        hadAnyRaid = true
+
+        -- Raid-Header
+        local rh = child:CreateTexture(nil, "BACKGROUND")
+        rh:SetPoint("TOPLEFT", 0, y); rh:SetPoint("TOPRIGHT", 0, y); rh:SetHeight(22)
+        rh:SetColorTexture(0.10, 0.08, 0.02, 1)
+
+        local rName = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        rName:SetPoint("TOPLEFT", 10, y - 3); rName:SetTextColor(1, 0.82, 0)
+        rName:SetText(raid.raidName or "Raid")
+
+        if raid.date then
+          local rDate = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+          rDate:SetPoint("TOPLEFT", 360, y - 3); rDate:SetTextColor(0.7, 0.7, 0.7)
+          rDate:SetText(raid.date)
         end
 
-        local timeStr = entry.timestamp and date("%d.%m. %H:%M", entry.timestamp) or ""
-        local r, g, b = GetClassColor(entry.player)
-        local tc = typeColors[entry.lootType] or { 0.7, 0.7, 0.7 }
+        local dc = DIFF_COLOR[raidDiff] or {0.7, 0.7, 0.7}
+        local dlabel = DIFF_LABEL[raidDiff] or ""
+        if dlabel ~= "" then
+          local badge = child:CreateTexture(nil, "ARTWORK")
+          badge:SetPoint("TOPLEFT", W - 100, y - 1); badge:SetSize(84, 16)
+          badge:SetColorTexture(dc[1]*0.3, dc[2]*0.3, dc[3]*0.3, 0.9)
+          local dLabel = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+          dLabel:SetPoint("TOPLEFT", W - 100, y - 3); dLabel:SetWidth(84)
+          dLabel:SetJustifyH("CENTER"); dLabel:SetTextColor(unpack(dc)); dLabel:SetText(dlabel)
+        end
+        y = y - 22
 
-        local function Col(text, xOff, cr, cg, cb)
+        -- Spalten-Header
+        local function H(text, xOff)
           local f = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-          f:SetPoint("TOPLEFT", xOff, y - 2)
-          f:SetTextColor(cr or 0.8, cg or 0.8, cb or 0.8)
-          f:SetText(tostring(text or ""))
+          f:SetPoint("TOPLEFT", xOff, y - 2); f:SetTextColor(0.5, 0.5, 0.5); f:SetText(text)
         end
-
-        Col(timeStr,                          10,  0.5, 0.5, 0.5)
-        Col(entry.boss    or "",             100)
-        Col(entry.itemName or "",            260,  0.8, 0.8, 1.0)
-        Col(entry.player  or "",             520,  r, g, b)
-
-        -- Typ-Badge
-        local typeBg = child:CreateTexture(nil, "ARTWORK")
-        typeBg:SetPoint("TOPLEFT", 615, y - 1)
-        typeBg:SetSize(42, 14)
-        typeBg:SetColorTexture(tc[1] * 0.3, tc[2] * 0.3, tc[3] * 0.3, 0.9)
-
-        local typeLabel = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
-        typeLabel:SetPoint("TOPLEFT", 615, y - 2)
-        typeLabel:SetWidth(42)
-        typeLabel:SetJustifyH("CENTER")
-        typeLabel:SetTextColor(unpack(tc))
-        local typeDisplay = entry.lootType == "MS" and "Main" or (entry.lootType == "OS" and "Off" or (entry.lootType or ""))
-        typeLabel:SetText(typeDisplay)
-
+        H("Zeitpunkt", 10); H("Boss", 120); H("Item", 280); H("Charakter", 520); H("Typ", 620)
         y = y - 18
+
+        for i, entry in ipairs(entries) do
+          if i % 2 == 0 then
+            local s = child:CreateTexture(nil, "BACKGROUND")
+            s:SetPoint("TOPLEFT", 0, y); s:SetPoint("TOPRIGHT", 0, y); s:SetHeight(18)
+            s:SetColorTexture(1, 1, 1, 0.03)
+          end
+
+          local timeStr = entry.timestamp and date("%d.%m. %H:%M", entry.timestamp) or ""
+          local r, g, b = GetClassColor(entry.player)
+          local eIsMS = IsMS(entry)
+          local tc = eIsMS and typeColors.ms or typeColors.os
+
+          local function Col(text, xOff, cr, cg, cb)
+            local f = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+            f:SetPoint("TOPLEFT", xOff, y - 2)
+            f:SetTextColor(cr or 0.8, cg or 0.8, cb or 0.8)
+            f:SetText(tostring(text or ""))
+          end
+
+          Col(timeStr,                       10, 0.5, 0.5, 0.5)
+          Col(entry.boss or "",             120)
+          Col(TryGetItemName(entry.itemID), 280, 0.8, 0.8, 1.0)
+          Col(entry.player or "",           520, r, g, b)
+
+          local typeBg = child:CreateTexture(nil, "ARTWORK")
+          typeBg:SetPoint("TOPLEFT", 615, y - 1); typeBg:SetSize(46, 14)
+          typeBg:SetColorTexture(tc[1]*0.3, tc[2]*0.3, tc[3]*0.3, 0.9)
+
+          local typeLabel = child:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+          typeLabel:SetPoint("TOPLEFT", 615, y - 2); typeLabel:SetWidth(46)
+          typeLabel:SetJustifyH("CENTER"); typeLabel:SetTextColor(unpack(tc))
+          typeLabel:SetText(eIsMS and "Main" or "Off")
+          y = y - 18
+        end
+        y = y - 10
       end
     end
-    y = y - 10
+  end
+
+  if not hadAnyRaid then
+    local h = child:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+    h:SetPoint("TOPLEFT", 10, -10)
+    h:SetText("Keine Einträge für den gewählten Filter.")
+    child:SetHeight(40)
+    return
   end
 
   child:SetHeight(math.abs(y) + 20)
