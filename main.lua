@@ -15,6 +15,7 @@ frame:RegisterEvent("LOOT_CLOSED")
 frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("ENCOUNTER_START")
 frame:RegisterEvent("ENCOUNTER_END")
+frame:RegisterEvent("GROUP_ROSTER_UPDATE")
 
 MyLoot.isEncounterActive        = false
 MyLoot.isBossActive             = false
@@ -94,7 +95,7 @@ MyLoot.currentView = "loot"
 function MyLoot.IsRaidLead()
   -- Solo → immer Raidlead
   if not IsInGroup() then
-    return false
+    return true
   end
 
   return UnitIsGroupLeader("player") or UnitIsGroupAssistant("player")
@@ -634,9 +635,13 @@ frame:SetScript("OnEvent", function(_, event, ...)
       MyLoot.HandleSyncMessage(msg, sender)
     end
 
+  elseif event == "GROUP_ROSTER_UPDATE" then
+    MyLoot.UpdateRole()
+
   elseif event == "ENCOUNTER_START" then
     local encounterID, encounterName = ...
 
+    MyLoot.UpdateRole()
     MyLoot.isEncounterActive       = true
     MyLoot.isBossActive            = true
     MyLoot.hasLootedBoss           = false
