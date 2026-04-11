@@ -4,6 +4,7 @@
 # Lokale Datendateien (werden von Companion App generiert)
 data/raid_data.lua
 data/stats_data.lua
+data/blacklist_data.lua
 
 # Windows
 Thumbs.db

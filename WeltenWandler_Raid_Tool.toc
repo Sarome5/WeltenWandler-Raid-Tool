@@ -12,6 +12,7 @@ libs\LibDBIcon-1.0\LibDBIcon-1.0.lua
 
 data\raid_data.lua
 data\stats_data.lua
+data\blacklist_data.lua
 
 main.lua
 minimap.lua

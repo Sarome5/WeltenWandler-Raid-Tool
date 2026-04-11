@@ -94,6 +94,55 @@ end
 -- IMPORT ENTRY POINT
 -- =========================
 
+-- =========================
+-- AUTO-IMPORT AUS RAID DATA
+-- =========================
+
+-- Lädt die Prioliste automatisch aus WRT_RaidData wenn der Raid live ist.
+-- Wird bei PLAYER_LOGIN aufgerufen wenn noch keine Prioliste geladen ist.
+-- Ein manueller Import via /wrtimport überschreibt dies immer.
+function MyLoot.AutoImportFromRaidData()
+  local data = WRT_RaidData
+  if not data or not data.raids or #data.raids == 0 then return false end
+
+  -- Raid mit vollständiger Prioliste finden (zeitlich nächster zu jetzt)
+  local now = time()
+  local target = nil
+  for _, raid in ipairs(data.raids) do
+    if raid.prioList and #raid.prioList > 0 then
+      if not target then
+        target = raid
+      else
+        local distNew = math.abs((raid.scheduledAt   or 0) - now)
+        local distOld = math.abs((target.scheduledAt or 0) - now)
+        if distNew < distOld then target = raid end
+      end
+    end
+  end
+
+  if not target then return false end
+
+  local superprioEnabled = target.superPrio == true
+  local prioData, itemPrioData = BuildPrioTables(target.prioList, superprioEnabled)
+
+  MyLootDB.raid.raidID           = target.raidID
+  MyLootDB.raid.raidName         = target.raidName
+  MyLootDB.raid.difficulty       = target.difficulty
+  MyLootDB.raid.superprioEnabled = superprioEnabled
+  MyLootDB.raid.prioData         = prioData
+  MyLootDB.raid.itemPrioData     = itemPrioData
+  MyLootDB.raid.importedAt       = now
+
+  local playerCount = 0
+  for _ in pairs(prioData) do playerCount = playerCount + 1 end
+  print(string.format("|cff00ccff[WRT]|r Prioliste automatisch geladen: %d Spieler (%s).",
+    playerCount, target.raidName or "?"))
+
+  MyLoot.Render()
+  return true
+end
+
+
 function MyLoot.ImportString(importString)
   if not importString or importString == "" then
     print("|cffff4444WRT:|r Import leer")

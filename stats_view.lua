@@ -57,35 +57,63 @@ local function IsMS(entry)
   return t == "ms" or t == "main" or t == "mainspec"
 end
 
+-- Erstellt ein Set aller ItemIDs für den gewählten Patch (nil = alle Patches).
+-- Gibt nil zurück wenn keine Patch-Daten vorhanden (= kein Item-Filter).
+local function BuildPatchItemSet(patches, patchId)
+  if not patches or #patches == 0 then return nil end
+  local set = {}
+  for _, p in ipairs(patches) do
+    if patchId == nil or p.id == patchId then
+      for _, id in ipairs(p.itemIDs or {}) do
+        set[id] = true
+      end
+    end
+  end
+  return next(set) ~= nil and set or nil
+end
+
+-- Erstellt ein Boss→{itemID=true} Mapping für den gewählten Patch (nil = alle Patches).
+-- Dient als Basis für die Dropchance-Anzeige inkl. 0%-Items.
+local function BuildBossItemTable(patches, patchId)
+  if not patches or #patches == 0 then return nil end
+  local bossMap = {}
+  for _, p in ipairs(patches) do
+    if patchId == nil or p.id == patchId then
+      for bossName, itemIDs in pairs(p.bossItems or {}) do
+        if not bossMap[bossName] then bossMap[bossName] = {} end
+        for _, id in ipairs(itemIDs) do
+          bossMap[bossName][id] = true
+        end
+      end
+    end
+  end
+  return next(bossMap) ~= nil and bossMap or nil
+end
+
 -- Aggregiert Dropchance-Daten live aus der lootHistory.
--- patches: data.patches (für vollständige Item-Liste inkl. 0%-Items wenn ein Patch gewählt ist)
-local function AggregateDropchance(lootHistory, diff, patchId, patches)
+-- patchItemSet: nur Items dieses Sets zählen (nil = alle)
+-- bossItemTable: vollständige Loot-Tabelle als Basis für 0%-Items
+local function AggregateDropchance(lootHistory, diff, patchItemSet, bossItemTable)
   local bossKills = {}
   local itemDrops = {}
 
   for _, raid in ipairs(lootHistory or {}) do
-    local skip = false
     local raidDiff = (raid.difficulty or ""):lower()
-    if diff ~= "all" and raidDiff ~= diff then skip = true end
-    if not skip and patchId ~= nil then
-      local match = false
-      for _, pid in ipairs(raid.patchIds or {}) do
-        if pid == patchId then match = true; break end
-      end
-      if not match then skip = true end
-    end
-    if not skip then
-      -- Boss-Kills: jeder Boss zählt pro Raid genau einmal
+    if diff == "all" or raidDiff == diff then
+      -- Zuerst Boss-Kills zählen (nur Bosse die im bossItemTable stehen)
       local seen = {}
       for _, e in ipairs(raid.entries or {}) do
         if e.boss and not seen[e.boss] then
-          seen[e.boss] = true
-          bossKills[e.boss] = (bossKills[e.boss] or 0) + 1
+          local bossInScope = not bossItemTable or bossItemTable[e.boss] ~= nil
+          if bossInScope then
+            seen[e.boss] = true
+            bossKills[e.boss] = (bossKills[e.boss] or 0) + 1
+          end
         end
       end
-      -- Item-Drops pro Boss
+      -- Dann Item-Drops zählen (item-level Patch-Filter)
       for _, e in ipairs(raid.entries or {}) do
-        if e.boss and e.itemID then
+        if e.boss and e.itemID and (not patchItemSet or patchItemSet[e.itemID]) then
           if not itemDrops[e.boss] then itemDrops[e.boss] = {} end
           itemDrops[e.boss][e.itemID] = (itemDrops[e.boss][e.itemID] or 0) + 1
         end
@@ -93,23 +121,15 @@ local function AggregateDropchance(lootHistory, diff, patchId, patches)
     end
   end
 
-  -- Wenn ein Patch gewählt: vollständige Loot-Tabelle des Patches als Basis verwenden.
-  -- Items die nie gedroppt sind erscheinen mit drops=0 (0%-Dropchance).
-  if patchId ~= nil and patches then
-    for _, p in ipairs(patches) do
-      if p.id == patchId and p.bossItems then
-        for bossName, itemIDs in pairs(p.bossItems) do
-          -- Boss-Eintrag anlegen falls er noch nicht aus lootHistory bekannt ist
-          if not bossKills[bossName] then bossKills[bossName] = 0 end
-          if not itemDrops[bossName] then itemDrops[bossName] = {} end
-          for _, itemID in ipairs(itemIDs) do
-            -- Nur eintragen wenn das Item noch nicht als Drop bekannt ist
-            if not itemDrops[bossName][itemID] then
-              itemDrops[bossName][itemID] = 0
-            end
-          end
+  -- Vollständige Loot-Tabelle als Basis → 0%-Items auffüllen
+  if bossItemTable then
+    for bossName, idSet in pairs(bossItemTable) do
+      if not bossKills[bossName] then bossKills[bossName] = 0 end
+      if not itemDrops[bossName] then itemDrops[bossName] = {} end
+      for itemID in pairs(idSet) do
+        if not itemDrops[bossName][itemID] then
+          itemDrops[bossName][itemID] = 0
         end
-        break
       end
     end
   end
@@ -125,7 +145,6 @@ local function AggregateDropchance(lootHistory, diff, patchId, patches)
         chance = kills > 0 and (drops / kills) or 0,
       })
     end
-    -- Sortierung: erst nach Drops absteigend, dann nach ItemID
     table.sort(items, function(a, b)
       if (a.drops or 0) ~= (b.drops or 0) then
         return (a.drops or 0) > (b.drops or 0)
@@ -138,28 +157,21 @@ local function AggregateDropchance(lootHistory, diff, patchId, patches)
   return result
 end
 
--- Aggregiert Spielerstatistiken live aus der lootHistory
-local function AggregatePlayerStats(lootHistory, diff, patchId)
-  local players   = {}
+-- Aggregiert Spielerstatistiken live aus der lootHistory.
+-- patchItemSet: nur Loot aus diesem Item-Set zählen (nil = alle)
+local function AggregatePlayerStats(lootHistory, diff, patchItemSet)
+  local players    = {}
   local totalRaids = 0
   local totalLoot  = 0
 
   for _, raid in ipairs(lootHistory or {}) do
-    local skip = false
     local raidDiff = (raid.difficulty or ""):lower()
-    if diff ~= "all" and raidDiff ~= diff then skip = true end
-    if not skip and patchId ~= nil then
-      local match = false
-      for _, pid in ipairs(raid.patchIds or {}) do
-        if pid == patchId then match = true; break end
-      end
-      if not match then skip = true end
-    end
-    if not skip then
+    if diff == "all" or raidDiff == diff then
       totalRaids = totalRaids + 1
       local raidKey = (raid.raidName or "") .. "|" .. (raid.date or "")
       for _, e in ipairs(raid.entries or {}) do
-        if e.player then
+        -- Item-level Patch-Filter
+        if e.player and (not patchItemSet or patchItemSet[e.itemID]) then
           if not players[e.player] then
             players[e.player] = { lootMS = 0, lootOS = 0, raids = {} }
           end
@@ -374,20 +386,6 @@ function MyLoot.RenderStatsView()
     function(key) statsState.diff = key; MyLoot.Render() end)
   table.insert(ui.statsTabButtons, diffBtn)
 
-  -- ── Scope-Dropdown (nicht bei dropchance) ────────────
-  local scopeItems = {
-    { key = "all", label = "MS + OS"   },
-    { key = "ms",  label = "Main-Spec" },
-    { key = "os",  label = "Off-Spec"  },
-  }
-  local scopeBtn = CreateDropdown(ui.topPanel, 173, -44, 125, scopeItems, statsState.scope,
-    function(key) statsState.scope = key; MyLoot.Render() end)
-  table.insert(ui.statsTabButtons, scopeBtn)
-  if statsState.view == "dropchance" then
-    scopeBtn:Hide()
-    if scopeBtn._popup then scopeBtn._popup:Hide() end
-  end
-
   -- ── Patch-Dropdown ───────────────────────────────────
   local patches = (data and data.patches) or {}
   if #patches > 0 then
@@ -396,12 +394,27 @@ function MyLoot.RenderStatsView()
       table.insert(patchItems, { key = tostring(p.id), label = p.name })
     end
     local currentPatchKey = statsState.patchId and tostring(statsState.patchId) or "all"
-    local patchBtn = CreateDropdown(ui.topPanel, 306, -44, 155, patchItems, currentPatchKey,
+    local patchBtn = CreateDropdown(ui.topPanel, 173, -44, 155, patchItems, currentPatchKey,
       function(key)
         statsState.patchId = (key == "all") and nil or tonumber(key)
         MyLoot.Render()
       end)
     table.insert(ui.statsTabButtons, patchBtn)
+  end
+
+  -- ── Scope-Dropdown (nicht bei dropchance) ────────────
+  local scopeX = #patches > 0 and 336 or 173
+  local scopeItems = {
+    { key = "all", label = "MS + OS"   },
+    { key = "ms",  label = "Main-Spec" },
+    { key = "os",  label = "Off-Spec"  },
+  }
+  local scopeBtn = CreateDropdown(ui.topPanel, scopeX, -44, 125, scopeItems, statsState.scope,
+    function(key) statsState.scope = key; MyLoot.Render() end)
+  table.insert(ui.statsTabButtons, scopeBtn)
+  if statsState.view == "dropchance" then
+    scopeBtn:Hide()
+    if scopeBtn._popup then scopeBtn._popup:Hide() end
   end
 
   -- Keine Daten
@@ -418,15 +431,18 @@ function MyLoot.RenderStatsView()
   -- =========================
   -- INHALT je nach Ansicht
   -- =========================
-  local lootHistory = data.lootHistory or {}
+  local lootHistory   = data.lootHistory or {}
+  local patchItemSet  = BuildPatchItemSet(data.patches, statsState.patchId)
+  local bossItemTable = BuildBossItemTable(data.patches, statsState.patchId)
+
   if statsState.view == "dropchance" then
-    local dcList = AggregateDropchance(lootHistory, statsState.diff, statsState.patchId, data.patches)
+    local dcList = AggregateDropchance(lootHistory, statsState.diff, patchItemSet, bossItemTable)
     MyLoot.RenderStatsDropchance(child, dcList)
   elseif statsState.view == "player" then
-    local psList = AggregatePlayerStats(lootHistory, statsState.diff, statsState.patchId)
+    local psList = AggregatePlayerStats(lootHistory, statsState.diff, patchItemSet)
     MyLoot.RenderStatsPlayer(child, psList, statsState.scope)
   else
-    MyLoot.RenderStatsHistory(child, data, statsState.diff, statsState.scope, statsState.patchId)
+    MyLoot.RenderStatsHistory(child, data, statsState.diff, statsState.scope, patchItemSet)
   end
 end
 
@@ -604,7 +620,8 @@ end
 -- =========================
 -- LOOTHISTORIE
 -- =========================
-function MyLoot.RenderStatsHistory(child, data, diff, scope, patchId)
+-- patchItemSet: Set von ItemIDs für den gewählten Patch (nil = kein Filter)
+function MyLoot.RenderStatsHistory(child, data, diff, scope, patchItemSet)
   local y = -10
   local W = child:GetWidth() or 660
 
@@ -622,25 +639,15 @@ function MyLoot.RenderStatsHistory(child, data, diff, scope, patchId)
   for _, raid in ipairs(data.lootHistory) do
     local raidDiff = (raid.difficulty or ""):lower()
 
-    -- Filter
-    local skip = false
-    if diff ~= "all" and raidDiff ~= diff then skip = true end
-    if not skip and patchId ~= nil then
-      local patchMatch = false
-      for _, pid in ipairs(raid.patchIds or {}) do
-        if pid == patchId then patchMatch = true; break end
-      end
-      if not patchMatch then skip = true end
-    end
-
-    if not skip then
-      -- Scope-Filter auf Eintragsebene
+    -- Difficulty-Filter auf Raid-Ebene
+    if diff == "all" or raidDiff == diff then
+      -- Scope- und Patch-Filter auf Eintragsebene
       local entries = {}
       for _, e in ipairs(raid.entries or {}) do
         local eIsMS = IsMS(e)
-        if scope == "ms" and not eIsMS then
-        elseif scope == "os" and eIsMS then
-        else table.insert(entries, e) end
+        local scopeOk = not (scope == "ms" and not eIsMS) and not (scope == "os" and eIsMS)
+        local patchOk = not patchItemSet or patchItemSet[e.itemID]
+        if scopeOk and patchOk then table.insert(entries, e) end
       end
 
       if #entries > 0 then

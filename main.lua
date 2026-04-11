@@ -534,9 +534,12 @@ end
 -- =========================
 function MyLoot.CheckAutoReset()
   local data = WRT_RaidData
-  -- Nur wenn Raid-Daten importiert sind UND Boss-Daten existieren
   if not data or not data.raids or #data.raids == 0 then return false end
-  if not MyLootDB.raid.bosses or #MyLootDB.raid.bosses == 0 then return false end
+
+  -- Prüfen ob überhaupt etwas zum Zurücksetzen vorhanden ist
+  local hasBosses = MyLootDB.raid.bosses and #MyLootDB.raid.bosses > 0
+  local hasPrio   = MyLootDB.raid.prioData and next(MyLootDB.raid.prioData) ~= nil
+  if not hasBosses and not hasPrio then return false end
 
   -- Neuesten VERGANGENEN scheduledAt ermitteln
   -- Zukünftige Raids ausschließen – sonst wird resetAt zu weit in die Zukunft gesetzt
@@ -557,12 +560,15 @@ function MyLoot.CheckAutoReset()
   local resetAt = time(t) + 86400  -- +1 Tag = nächster Tag 08:00
 
   if now >= resetAt then
-    local count = #MyLootDB.raid.bosses
-    MyLootDB.raid.bosses       = {}
-    MyLootDB.selectedBossIndex = 1
+    local bossCount = #(MyLootDB.raid.bosses or {})
+    MyLootDB.raid.bosses        = {}
+    MyLootDB.selectedBossIndex  = 1
+    MyLootDB.raid.prioData      = {}
+    MyLootDB.raid.itemPrioData  = {}
+    MyLootDB.raid.importedAt    = nil
     print(string.format(
-      "|cff00ccff[WRT]|r Raidabend beendet – %d Boss-Einträge wurden automatisch zurückgesetzt.",
-      count))
+      "|cff00ccff[WRT]|r Raidabend beendet – %d Boss-Einträge und Prioliste zurückgesetzt.",
+      bossCount))
     return true  -- Reset wurde durchgeführt
   end
 
@@ -577,6 +583,11 @@ frame:SetScript("OnEvent", function(_, event, ...)
     -- per LOOT_NEW die gerade gelöschten Boss-Einträge neu befüllen
     if not didReset then
       C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", "REQUEST_SYNC", "RAID")
+    end
+    -- Prioliste automatisch aus WRT_RaidData laden wenn verfügbar und noch keine geladen
+    local hasExistingPrio = MyLootDB.raid.prioData and next(MyLootDB.raid.prioData) ~= nil
+    if not hasExistingPrio then
+      MyLoot.AutoImportFromRaidData()
     end
 
   elseif event == "LOOT_READY" then

@@ -300,38 +300,44 @@ function MyLoot.HandleLootOpened()
           LootDebug(string.format("Slot %d: %s [Quelle: %s]", i, link:match("%[(.-)%]") or "?", sourceName or "?"))
 
           local itemID = link:match("item:(%d+)")
-          local uid    = boss._slotUIDs[i]
 
-          if not uid then
-            boss._lootUIDCounter = (boss._lootUIDCounter or 0) + 1
-            uid = itemID .. "-" .. boss._lootUIDCounter
-            boss._slotUIDs[i] = uid
-          end
+          -- Blacklist-Prüfung: Item überspringen wenn auf der Blacklist
+          local isBlacklisted = WRT_BlacklistData and WRT_BlacklistData.items
+                             and WRT_BlacklistData.items[tonumber(itemID)]
+          if not isBlacklisted then
+            local uid = boss._slotUIDs[i]
 
-          local exists = false
-          for _, existing in ipairs(boss.items) do
-            if existing.uid == uid then exists = true; break end
-          end
-
-          if not exists then
-            if MyLootDB.role == "raidlead" then
-              table.insert(boss.items, {
-                uid        = uid,
-                itemLink   = link,
-                slot       = i,
-                processed  = false,
-                session    = nil,
-                assignedTo = nil,
-                type       = nil,
-                status     = "new",
-                ui         = { selectedPlayer = nil, selectedType = "MS" }
-              })
-            elseif not boss._sentClientUIDs[uid] then
-              -- nur senden wenn noch nicht gesendet (Retry-Schutz)
-              boss._sentClientUIDs[uid] = true
-              MyLoot.SendClientLoot(link, uid)
+            if not uid then
+              boss._lootUIDCounter = (boss._lootUIDCounter or 0) + 1
+              uid = itemID .. "-" .. boss._lootUIDCounter
+              boss._slotUIDs[i] = uid
             end
-          end
+
+            local exists = false
+            for _, existing in ipairs(boss.items) do
+              if existing.uid == uid then exists = true; break end
+            end
+
+            if not exists then
+              if MyLootDB.role == "raidlead" then
+                table.insert(boss.items, {
+                  uid        = uid,
+                  itemLink   = link,
+                  slot       = i,
+                  processed  = false,
+                  session    = nil,
+                  assignedTo = nil,
+                  type       = nil,
+                  status     = "new",
+                  ui         = { selectedPlayer = nil, selectedType = "MS" }
+                })
+              elseif not boss._sentClientUIDs[uid] then
+                -- nur senden wenn noch nicht gesendet (Retry-Schutz)
+                boss._sentClientUIDs[uid] = true
+                MyLoot.SendClientLoot(link, uid)
+              end
+            end
+          end  -- not isBlacklisted
         end
       end
     end
