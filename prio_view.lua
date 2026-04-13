@@ -149,9 +149,13 @@ function MyLoot.RenderPrioList()
     if type(items) == "table" then
       for p = 1, colCount do
         local cellX = startX + nameWidth + (p - 1) * colWidth
+        local rendered = false
 
         for itemID, prio in pairs(items) do
-          if type(prio) == "number" and prio == p then
+          local isMatch      = type(prio) == "number" and prio == p
+          local isSuperprio  = prio == "superprio"
+
+          if isMatch or isSuperprio then
             local itemName, itemLink, itemQuality, _, _, _, _, _, _, itemIcon = GetItemInfo(itemID)
 
             if not itemName then
@@ -178,10 +182,12 @@ function MyLoot.RenderPrioList()
               icon:SetTexture(itemIcon)
             end
 
-            -- Item Name in Qualitätsfarbe
+            -- Item Name in Qualitätsfarbe; Superprio-Einträge gold hervorheben
             local nameStr = itemName or ("Item " .. tostring(itemID))
             local r, g, b = 1, 1, 1
-            if itemQuality then
+            if isSuperprio then
+              r, g, b = 1, 0.82, 0
+            elseif itemQuality then
               r, g, b = GetItemQualityColor(itemQuality)
             end
 
@@ -208,8 +214,17 @@ function MyLoot.RenderPrioList()
               end)
             end
 
+            rendered = true
             break
           end
+        end
+
+        -- Kein Item für diesen Slot → Spieler hat gepasst
+        if not rendered then
+          local dashTxt = sc:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+          dashTxt:SetPoint("TOPLEFT", cellX + 5, y - 11)
+          dashTxt:SetTextColor(0.4, 0.4, 0.4)
+          dashTxt:SetText("—")
         end
       end
     end

@@ -9,6 +9,7 @@ local ADDON_PREFIX = "MYLOOT"
 -- =========================
 local frame = CreateFrame("Frame")
 frame:RegisterEvent("PLAYER_LOGIN")
+frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("CHAT_MSG_LOOT")
 frame:RegisterEvent("LOOT_READY")
 frame:RegisterEvent("LOOT_CLOSED")
@@ -66,16 +67,18 @@ function MyLoot.BroadcastFullState()
   if MyLootDB.role ~= "raidlead" then return end
 
   for bossIndex, boss in ipairs(MyLootDB.raid.bosses) do
-    for _, loot in ipairs(boss.items) do
+    -- Boss-Info vorab senden
+    local bossInfoMsg = "SYNC_BOSS:" .. bossIndex .. ":" .. (boss.bossName or "") .. ":" .. (boss.difficulty or "")
+    C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", bossInfoMsg, "RAID")
 
+    for _, loot in ipairs(boss.items) do
       -- Item senden
       local msg = "LOOT_NEW:" .. bossIndex .. ":" .. loot.session .. ":" .. loot.itemLink
       C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", msg, "RAID")
 
-      -- Status senden
-      local syncMsg = "LOOT_SYNC:" .. loot.session .. ":" .. (loot.assignedTo or "nil") .. ":" .. (loot.type or "nil")
+      -- Status senden (Format: LOOT_SYNC:bossIndex:session:player:type)
+      local syncMsg = "LOOT_SYNC:" .. bossIndex .. ":" .. loot.session .. ":" .. (loot.assignedTo or "nil") .. ":" .. (loot.type or "nil")
       C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", syncMsg, "RAID")
-
     end
   end
 
@@ -134,6 +137,16 @@ ui:RegisterForDrag("LeftButton")
 
 ui:SetScript("OnDragStart", ui.StartMoving)
 ui:SetScript("OnDragStop", ui.StopMovingOrSizing)
+
+-- Alle offenen Dropdowns schließen wenn das Fenster versteckt wird
+ui:SetScript("OnHide", function()
+  if MyLootDropdown then MyLootDropdown:Hide() end
+  if ui.statsTabButtons then
+    for _, b in ipairs(ui.statsTabButtons) do
+      if b._popup then b._popup:Hide() end
+    end
+  end
+end)
 
 ui:SetBackdrop({ bgFile = "Interface/Tooltips/UI-Tooltip-Background" })
 ui:SetBackdropColor(0, 0, 0, 0.9)
@@ -370,10 +383,14 @@ end
 -- MAIN RENDER
 -- =========================
 function MyLoot.Render()
-  if MyLootDropdown then
-    MyLootDropdown:Hide()
-  end
+  if MyLootDropdown then MyLootDropdown:Hide() end
   local ui = MyLoot.UI
+  -- Alle Stats-Dropdowns schließen (unabhängig von View/Sichtbarkeit)
+  if ui.statsTabButtons then
+    for _, b in ipairs(ui.statsTabButtons) do
+      if b._popup then b._popup:Hide() end
+    end
+  end
   if not ui:IsShown() then return end
 
   local view = MyLoot.currentView
@@ -406,11 +423,12 @@ function MyLoot.Render()
       c:ClearAllPoints()
     end
 
-    -- Texte leeren
+    -- Regions ausblenden (Texte leeren, Texturen verstecken)
     for _, region in ipairs({p:GetRegions()}) do
       if region:IsObjectType("FontString") then
         region:SetText("")
       end
+      region:Hide()
     end
 
   end
@@ -491,18 +509,18 @@ end
 
 SLASH_MYLOOTRESET1 = "/wrtreset"
 SlashCmdList["MYLOOTRESET"] = function()
+  local savedMinimapDB = MyLootDB.minimapDB  -- Position beibehalten
   MyLootDB = {
-  ["items"] = {
-  },
-  ["role"] = "user",
-  ["raid"] = {
-  ["ffaItems"] = {
-  },
-  ["superprioEnabled"] = true,
-  ["bosses"]           = {},
-  ["prioData"]         = {},
-  },
-  ["selectedBossIndex"] = 1,
+    ["items"]            = {},
+    ["role"]             = "user",
+    ["raid"]             = {
+      ["ffaItems"]         = {},
+      ["superprioEnabled"] = true,
+      ["bosses"]           = {},
+      ["prioData"]         = {},
+    },
+    ["selectedBossIndex"] = 1,
+    ["minimapDB"]         = savedMinimapDB or {},
   }
   ReloadUI()
 end
@@ -534,46 +552,35 @@ end
 -- EVENTS
 -- =========================
 function MyLoot.CheckAutoReset()
-  local data = WRT_RaidData
-  if not data or not data.raids or #data.raids == 0 then return false end
-
   -- Prüfen ob überhaupt etwas zum Zurücksetzen vorhanden ist
   local hasBosses = MyLootDB.raid.bosses and #MyLootDB.raid.bosses > 0
   local hasPrio   = MyLootDB.raid.prioData and next(MyLootDB.raid.prioData) ~= nil
   if not hasBosses and not hasPrio then return false end
 
-  -- Neuesten VERGANGENEN scheduledAt ermitteln
-  -- Zukünftige Raids ausschließen – sonst wird resetAt zu weit in die Zukunft gesetzt
+  -- Heutiger Reset-Zeitpunkt: heute 08:00 Uhr
   local now = time()
-  local latestPast = 0
-  for _, raid in ipairs(data.raids) do
-    if raid.scheduledAt and raid.scheduledAt <= now and raid.scheduledAt > latestPast then
-      latestPast = raid.scheduledAt
-    end
-  end
+  local today = date("*t", now)
+  today.hour = 8; today.min = 0; today.sec = 0
+  local resetAt = time(today)
 
-  if latestPast == 0 then return false end  -- Noch kein vergangener Raid vorhanden
+  -- Noch nicht 8 Uhr heute → kein Reset
+  if now < resetAt then return false end
 
-  -- Reset-Zeitpunkt: Tag nach dem letzten (vergangenen) Raid um 08:00 Uhr
-  -- (Puffer für Nachteulen die nach Mitternacht noch online sind)
-  local t = date("*t", latestPast)
-  t.hour = 8; t.min = 0; t.sec = 0
-  local resetAt = time(t) + 86400  -- +1 Tag = nächster Tag 08:00
+  -- Bereits heute nach 8 Uhr resettet → nicht erneut zurücksetzen
+  if MyLootDB.lastResetAt and MyLootDB.lastResetAt >= resetAt then return false end
 
-  if now >= resetAt then
-    local bossCount = #(MyLootDB.raid.bosses or {})
-    MyLootDB.raid.bosses        = {}
-    MyLootDB.selectedBossIndex  = 1
-    MyLootDB.raid.prioData      = {}
-    MyLootDB.raid.itemPrioData  = {}
-    MyLootDB.raid.importedAt    = nil
-    print(string.format(
-      "|cff00ccff[WRT]|r Raidabend beendet – %d Boss-Einträge und Prioliste zurückgesetzt.",
-      bossCount))
-    return true  -- Reset wurde durchgeführt
-  end
-
-  return false
+  -- Reset durchführen
+  local bossCount = #(MyLootDB.raid.bosses or {})
+  MyLootDB.raid.bosses        = {}
+  MyLootDB.selectedBossIndex  = 1
+  MyLootDB.raid.prioData      = {}
+  MyLootDB.raid.itemPrioData  = {}
+  MyLootDB.raid.importedAt    = nil
+  MyLootDB.lastResetAt        = now
+  print(string.format(
+    "|cff00ccff[WRT]|r Tagesreset – %d Boss-Einträge und Prioliste zurückgesetzt.",
+    bossCount))
+  return true
 end
 
 frame:SetScript("OnEvent", function(_, event, ...)
@@ -647,6 +654,14 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
     if prefix == "MYLOOT_SYNC" then
       MyLoot.HandleSyncMessage(msg, sender)
+    end
+
+  elseif event == "PLAYER_ENTERING_WORLD" then
+    -- Nach Ladescreen/Instanzwechsel: Würfelerkennung reaktivieren wenn noch Boss-Daten vorhanden
+    -- (verhindert dass _awaitingLootAssignment nach Relog/Reload auf false bleibt)
+    local hasBosses = MyLootDB.raid.bosses and #MyLootDB.raid.bosses > 0
+    if hasBosses and not MyLoot._awaitingLootAssignment then
+      MyLoot._awaitingLootAssignment = true
     end
 
   elseif event == "GROUP_ROSTER_UPDATE" then

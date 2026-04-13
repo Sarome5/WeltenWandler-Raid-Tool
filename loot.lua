@@ -126,8 +126,10 @@ function MyLoot.TryAutoAssignFromChat(msg)
     return
   end
 
-  local player   = nil
-  local lootType = "MS"
+  local player    = nil
+  local lootType  = "MS"
+  local _lastRoll = nil
+  local _lastSpec = nil
 
   -- Muster 1: "Ihr erhaltet Beute: [Item]" → eigener Charakter (kein Loot-Typ)
   if msg:find("Ihr erhaltet Beute:") then
@@ -147,22 +149,37 @@ function MyLoot.TryAutoAssignFromChat(msg)
     if player then player = player:match("^%s*(.-)%s*$") end
     LootDebug("Muster 2b (bekommt): " .. tostring(player))
 
-  -- Muster 3: "[Spieler] hat gewonnen (Bedarf/Primäre Spezialisierung/... – N, ...): [Item]"
+  -- Muster 3: "[Spieler] hat gewonnen (Bedarf - 98, Sekundäre Spezialisierung): [Item]"
   elseif msg:find("hat gewonnen") then
     local winner = msg:match("^(.+) hat gewonnen %(")
     if winner then
       player = winner:match("^%s*(.-)%s*$")
-      -- Klammerinhalt plain-text gegen alle bekannten Typen prüfen (kein Unicode-en-dash-Problem)
       local inner = msg:match("hat gewonnen %((.-)%)")
       if inner then
+        -- Würfelzahl extrahieren (Format: "Bedarf - 98" oder "Gier - 42")
+        local rollNum = inner:match("%- (%d+)")
+        if rollNum then
+          _lastRoll = tonumber(rollNum)
+        else
+          _lastRoll = nil
+        end
+        -- Loot-Typ bestimmen
         for key, val in pairs(LOOT_TYPE_MAP) do
           if inner:find(key, 1, true) then
             lootType = val
             break
           end
         end
+        -- Primär/Sekundär Spezialisierung separat merken
+        if inner:find("Primäre Spezialisierung", 1, true) then
+          _lastSpec = "Primär"
+        elseif inner:find("Sekundäre Spezialisierung", 1, true) then
+          _lastSpec = "Sekundär"
+        else
+          _lastSpec = nil
+        end
       end
-      LootDebug("Muster 3 (Würfel): " .. tostring(player) .. " → " .. lootType)
+      LootDebug("Muster 3 (Würfel): " .. tostring(player) .. " → " .. lootType .. " Roll:" .. tostring(_lastRoll))
     else
       LootDebug("Kein Muster erkannt für: " .. msg)
     end
@@ -178,16 +195,28 @@ function MyLoot.TryAutoAssignFromChat(msg)
   local chatItemID     = itemLink:match("item:(%d+)")
   if not chatItemID then return end
 
+  -- Blacklist-Prüfung: Item ignorieren wenn auf der Blacklist
+  local isBlacklisted = WRT_BlacklistData and WRT_BlacklistData.items
+                     and WRT_BlacklistData.items[tonumber(chatItemID)]
+  if isBlacklisted then
+    LootDebug("Blacklist-Item ignoriert: " .. chatItemID)
+    return
+  end
+
   local assigned = false
 
   -- Schritt 1: exakter Match auf Hitem-String (BonusID-sicher)
+  -- Nur "new"-Items matchen: "updated" (bereits tentativ zugewiesen) überspringen,
+  -- damit bei Mehrfachdrops des gleichen Items jede Kopie ihren eigenen Gewinner bekommt.
   for _, boss in ipairs(MyLootDB.raid.bosses) do
     for _, loot in ipairs(boss.items) do
-      if loot.status ~= "assigned" and loot.itemLink then
+      if loot.status == "new" and loot.itemLink then
         local lootItemString = loot.itemLink:match("Hitem:([^|]+)")
         if lootItemString == chatItemString then
           loot.assignedTo = player
           loot.type       = lootType
+          loot.roll       = _lastRoll
+          loot.spec       = _lastSpec
           loot.status     = "updated"
           assigned = true
           break
@@ -198,12 +227,12 @@ function MyLoot.TryAutoAssignFromChat(msg)
   end
 
   -- Schritt 2: Fallback auf Base-ItemID (falls BonusID-String abweicht)
-  -- Nur wenn die ItemID eindeutig ist – bei Duplikaten lieber nicht raten
+  -- Nur wenn die ItemID unter den "new"-Items eindeutig ist – bei Duplikaten lieber nicht raten
   if not assigned then
     local matchCount = 0
     for _, boss in ipairs(MyLootDB.raid.bosses) do
       for _, loot in ipairs(boss.items) do
-        if loot.status ~= "assigned" and loot.itemLink then
+        if loot.status == "new" and loot.itemLink then
           if loot.itemLink:match("item:(%d+)") == chatItemID then
             matchCount = matchCount + 1
           end
@@ -214,10 +243,12 @@ function MyLoot.TryAutoAssignFromChat(msg)
     if matchCount == 1 then
       for _, boss in ipairs(MyLootDB.raid.bosses) do
         for _, loot in ipairs(boss.items) do
-          if loot.status ~= "assigned" and loot.itemLink then
+          if loot.status == "new" and loot.itemLink then
             if loot.itemLink:match("item:(%d+)") == chatItemID then
               loot.assignedTo = player
               loot.type       = lootType
+              loot.roll       = _lastRoll
+              loot.spec       = _lastSpec
               loot.status     = "updated"
               assigned = true
               break
@@ -570,6 +601,14 @@ function MyLoot.RenderLoot()
         if loot.type then
           local typeLabels = { MS = "Bedarf", OS = "Gier", DE = "Transmog", Transmog = "Transmog" }
           local label = typeLabels[loot.type] or loot.type
+          -- Primär/Sekundär Spezialisierung ergänzen
+          if loot.spec then
+            label = label .. " (" .. loot.spec .. ")"
+          end
+          -- Würfelzahl als Funfact
+          if loot.roll then
+            label = label .. "  " .. loot.roll
+          end
           local typeTxt = infoFrame:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
           typeTxt:SetPoint("LEFT", 140, 0)
           typeTxt:SetTextColor(1, 0.82, 0)
@@ -598,18 +637,20 @@ function MyLoot.HandleSyncMessage(msg, sender)
     if MyLootDB.role ~= "raidlead" then return end
 
     for bossIndex, boss in ipairs(MyLootDB.raid.bosses) do
-      for _, loot in ipairs(boss.items) do
+      -- Boss-Info vorab senden: Empfänger kann damit richtig matchen/erstellen
+      local bossInfoMsg = "SYNC_BOSS:" .. bossIndex .. ":" .. (boss.bossName or "") .. ":" .. (boss.difficulty or "")
+      MyLoot.QueueMessage("MYLOOT_SYNC", bossInfoMsg, "WHISPER", sender)
 
+      for _, loot in ipairs(boss.items) do
         local encoded = loot.itemLink:gsub(":", ";")
         local raidID = MyLootDB.raid.raidID or "local"
         local globalUID = raidID .. "-" .. bossIndex .. "-" .. (boss.killID or 1) .. "-" .. loot.uid
 
-        local msg = "LOOT_NEW:" .. bossIndex .. ":" .. loot.session .. ":" .. globalUID .. ":" .. encoded
-        MyLoot.QueueMessage("MYLOOT_SYNC", msg, "WHISPER", sender)
+        local newMsg = "LOOT_NEW:" .. bossIndex .. ":" .. loot.session .. ":" .. globalUID .. ":" .. encoded
+        MyLoot.QueueMessage("MYLOOT_SYNC", newMsg, "WHISPER", sender)
 
-        local syncMsg = "LOOT_SYNC:" .. loot.session .. ":" .. (loot.assignedTo or "nil") .. ":" .. (loot.type or "nil")
+        local syncMsg = "LOOT_SYNC:" .. bossIndex .. ":" .. loot.session .. ":" .. (loot.assignedTo or "nil") .. ":" .. (loot.type or "nil")
         MyLoot.QueueMessage("MYLOOT_SYNC", syncMsg, "WHISPER", sender)
-
       end
     end
 
@@ -627,7 +668,41 @@ function MyLoot.HandleSyncMessage(msg, sender)
     cmd = msg
   end
 
-  if cmd == "LOOT_NEW" then
+  if cmd == "SYNC_BOSS" then
+    -- Format: SYNC_BOSS:remoteBossIndex:bossName:difficulty
+    -- Baut eine Mapping-Tabelle remoteBossIndex → lokalem Boss-Index auf,
+    -- damit LOOT_NEW/LOOT_SYNC den richtigen Boss treffen.
+    local remoteBossIndex, bossName, difficulty = rest:match("^(%d+):(.+):(.-)$")
+    remoteBossIndex = tonumber(remoteBossIndex)
+    if not remoteBossIndex then return end
+
+    MyLoot._syncBossMap = MyLoot._syncBossMap or {}
+
+    -- Vorhandenen Boss per Name+Schwierigkeit suchen
+    local localIndex = nil
+    for i, b in ipairs(MyLootDB.raid.bosses) do
+      if b.bossName == bossName and (b.difficulty or "") == (difficulty or "") then
+        localIndex = i
+        break
+      end
+    end
+
+    -- Nicht gefunden → neu anlegen mit echtem Namen
+    if not localIndex then
+      local newBoss = {
+        bossName   = bossName,
+        difficulty = difficulty ~= "" and difficulty or nil,
+        items      = {},
+        killID     = 1,
+      }
+      table.insert(MyLootDB.raid.bosses, newBoss)
+      localIndex = #MyLootDB.raid.bosses
+    end
+
+    MyLoot._syncBossMap[remoteBossIndex] = localIndex
+    return
+
+  elseif cmd == "LOOT_NEW" then
     local bossIndex, session, uid, itemLink = rest:match("^(%d+):(%d+):([^:]+):(.+)$")
 
     if not itemLink then
@@ -638,14 +713,18 @@ function MyLoot.HandleSyncMessage(msg, sender)
     session = tonumber(session)
     bossIndex = tonumber(bossIndex)
 
-    local boss = MyLootDB.raid.bosses[bossIndex]
+    -- Mapping aus SYNC_BOSS nutzen wenn vorhanden, sonst direkter Index
+    local localIndex = (MyLoot._syncBossMap and MyLoot._syncBossMap[bossIndex]) or bossIndex
+    local boss = MyLootDB.raid.bosses[localIndex]
 
     if not boss then
+      -- Fallback: Platzhalter (sollte durch SYNC_BOSS eigentlich nicht mehr vorkommen)
       boss = {
         bossName = "Boss " .. bossIndex,
         items = {}
       }
-      MyLootDB.raid.bosses[bossIndex] = boss
+      table.insert(MyLootDB.raid.bosses, boss)
+      localIndex = #MyLootDB.raid.bosses
     end
 
     local exists = false
@@ -730,16 +809,51 @@ function MyLoot.HandleSyncMessage(msg, sender)
 
 
   elseif cmd == "LOOT_SYNC" then
-    local session, player, type = strsplit(":", rest)
-    session = tonumber(session)
+    -- Neues Format: bossIndex:session:player:type
+    -- Altes Format (Fallback): session:player:type
+    local p1, p2, p3, p4 = strsplit(":", rest)
+    local bossIndex, session, player, lootType
+    if p4 then
+      -- neues Format mit bossIndex
+      bossIndex = tonumber(p1)
+      session   = tonumber(p2)
+      player    = p3
+      lootType  = p4
+    else
+      -- altes Format ohne bossIndex (Abwärtskompatibilität)
+      bossIndex = nil
+      session   = tonumber(p1)
+      player    = p2
+      lootType  = p3
+    end
 
-    for _, boss in ipairs(MyLootDB.raid.bosses) do
-      for _, loot in ipairs(boss.items) do
-        if loot.session == session then
-          loot.assignedTo = (player ~= "nil") and player or nil
-          loot.type = (type ~= "nil") and type or nil
-          loot.status = "synced"
-          break
+    if bossIndex then
+      -- Mapping aus SYNC_BOSS nutzen wenn vorhanden, sonst direkter Index
+      local localIndex = (MyLoot._syncBossMap and MyLoot._syncBossMap[bossIndex]) or bossIndex
+      local boss = MyLootDB.raid.bosses[localIndex]
+      if boss then
+        for _, loot in ipairs(boss.items) do
+          if loot.session == session then
+            loot.assignedTo = (player ~= "nil") and player or nil
+            loot.type       = (lootType ~= "nil") and lootType or nil
+            loot.status     = "synced"
+            break
+          end
+        end
+      end
+    else
+      -- Fallback: ersten Treffer über alle Bosse (altes Protokoll)
+      local found = false
+      for _, boss in ipairs(MyLootDB.raid.bosses) do
+        if found then break end
+        for _, loot in ipairs(boss.items) do
+          if loot.session == session then
+            loot.assignedTo = (player ~= "nil") and player or nil
+            loot.type       = (lootType ~= "nil") and lootType or nil
+            loot.status     = "synced"
+            found = true
+            break
+          end
         end
       end
     end
