@@ -585,9 +585,23 @@ frame:SetScript("OnEvent", function(_, event, ...)
     if not didReset then
       C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", "REQUEST_SYNC", "RAID")
     end
-    -- Prioliste automatisch aus WRT_RaidData laden wenn verfügbar und noch keine geladen
+    -- Prioliste automatisch aus WRT_RaidData laden:
+    -- Immer importieren wenn keine Daten vorhanden, oder wenn ein anderer Raid
+    -- mit prioList verfügbar ist als der aktuell gespeicherte.
     local hasExistingPrio = MyLootDB.raid.prioData and next(MyLootDB.raid.prioData) ~= nil
-    if not hasExistingPrio then
+    local currentRaidID   = MyLootDB.raid.raidID
+
+    local betterRaidAvailable = false
+    if hasExistingPrio and WRT_RaidData and WRT_RaidData.raids then
+      for _, r in ipairs(WRT_RaidData.raids) do
+        if r.prioList and #r.prioList > 0 and r.raidID ~= currentRaidID then
+          betterRaidAvailable = true
+          break
+        end
+      end
+    end
+
+    if not hasExistingPrio or betterRaidAvailable then
       MyLoot.AutoImportFromRaidData()
     end
 
