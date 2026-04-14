@@ -576,6 +576,7 @@ function MyLoot.CheckAutoReset()
   MyLootDB.raid.prioData      = {}
   MyLootDB.raid.itemPrioData  = {}
   MyLootDB.raid.importedAt    = nil
+  MyLootDB.activeItem         = nil
   MyLootDB.lastResetAt        = now
   print(string.format(
     "|cff00ccff[WRT]|r Tagesreset – %d Boss-Einträge und Prioliste zurückgesetzt.",
