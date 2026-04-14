@@ -133,6 +133,13 @@ function MyLoot.TryAddGroupLootItem(itemLink)
     return
   end
 
+  -- Housing-Items ignorieren (Behausung Dekoration)
+  local _, _, _, _, _, itemType = GetItemInfo(itemLink)
+  if itemType == "Behausung Dekoration" then
+    LootDebug("Housing-Item ignoriert: " .. itemID)
+    return
+  end
+
   -- Duplikat prüfen (selbe ItemID + noch nicht vergeben)
   for _, existing in ipairs(boss.items) do
     if existing.itemLink and existing.itemLink:match("item:(%d+)") == itemID
@@ -394,6 +401,12 @@ function MyLoot.HandleLootOpened()
           -- Blacklist-Prüfung: Item überspringen wenn auf der Blacklist
           local isBlacklisted = WRT_BlacklistData and WRT_BlacklistData.items
                              and WRT_BlacklistData.items[tonumber(itemID)]
+          -- Housing-Items ignorieren (Behausung Dekoration)
+          local _, _, _, _, _, lootItemType = GetItemInfo(link)
+          if not isBlacklisted and lootItemType == "Behausung Dekoration" then
+            LootDebug("Housing-Item ignoriert (LootOpened): " .. (itemID or "?"))
+            isBlacklisted = true
+          end
           if not isBlacklisted then
             local uid = boss._slotUIDs[i]
 
