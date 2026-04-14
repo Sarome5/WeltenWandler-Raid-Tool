@@ -116,13 +116,72 @@ local function LootDebug(msg)
   end
 end
 
+-- Fügt ein Item aus dem Group-Loot-Chat zu boss.items hinzu (falls noch nicht vorhanden)
+function MyLoot.TryAddGroupLootItem(itemLink)
+  local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
+  local boss = idx and MyLootDB.raid.bosses[idx]
+  if not boss then return end
+
+  local itemID = itemLink:match("item:(%d+)")
+  if not itemID then return end
+
+  -- Blacklist prüfen
+  local isBlacklisted = WRT_BlacklistData and WRT_BlacklistData.items
+                     and WRT_BlacklistData.items[tonumber(itemID)]
+  if isBlacklisted then
+    LootDebug("Group Loot Item auf Blacklist: " .. itemID)
+    return
+  end
+
+  -- Duplikat prüfen (selbe ItemID + noch nicht vergeben)
+  for _, existing in ipairs(boss.items) do
+    if existing.itemLink and existing.itemLink:match("item:(%d+)") == itemID
+       and existing.status ~= "assigned" then
+      LootDebug("Group Loot Item bereits vorhanden: " .. itemID)
+      return
+    end
+  end
+
+  boss._lootUIDCounter = (boss._lootUIDCounter or 0) + 1
+  local uid = itemID .. "-" .. boss._lootUIDCounter
+
+  table.insert(boss.items, {
+    uid        = uid,
+    itemLink   = itemLink,
+    assignedTo = nil,
+    type       = nil,
+    status     = "new",
+    processed  = true,
+    ui         = { selectedPlayer = nil, selectedType = "MS" }
+  })
+
+  LootDebug("Group Loot Item hinzugefügt: " .. itemID)
+  MyLoot.Render()
+end
+
 function MyLoot.TryAutoAssignFromChat(msg)
   if not MyLoot._awaitingLootAssignment then return end
+
+  -- "[Beute]: " Präfix entfernen (Group Loot System-Nachrichten)
+  msg = msg:gsub("^%[Beute%]:%s*", "")
+
   LootDebug("Chat: " .. msg)
 
   local itemLink = msg:match("|Hitem:.-|h.-|h")
   if not itemLink then
     LootDebug("Kein Item-Link gefunden → ignoriert")
+    return
+  end
+
+  -- Group Loot: reiner Item-Drop (kein Spieler, kein Würfelergebnis)
+  local isBareDrop = not msg:find("hat gewonnen")
+                 and not msg:find("bekommt Beute")
+                 and not msg:find("erhaltet Beute")
+                 and not msg:find("erhält Beute")
+                 and not msg:find("habt gepasst")
+                 and not msg:find("Beuteverteilung")
+  if isBareDrop then
+    MyLoot.TryAddGroupLootItem(itemLink)
     return
   end
 
