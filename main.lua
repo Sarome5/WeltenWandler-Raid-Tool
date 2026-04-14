@@ -1,5 +1,7 @@
 MyLoot = MyLoot or {}
-MyLoot.VERSION = "0.1.0"
+MyLoot.VERSION = C_AddOns and C_AddOns.GetAddOnMetadata("WeltenWandler_Raid_Tool", "Version")
+             or GetAddOnMetadata and GetAddOnMetadata("WeltenWandler_Raid_Tool", "Version")
+             or "?"
 MyLoot.GITHUB  = "https://github.com/Sarome5/WeltenWandler-Raid-Tool"
 
 local ADDON_PREFIX = "MYLOOT"
@@ -287,6 +289,11 @@ border:SetColorTexture(1, 1, 1, 0.8)
 border:SetWidth(0.5)
 border:SetPoint("TOPLEFT", sidebar, "TOPRIGHT", 0, 0)
 border:SetPoint("BOTTOMLEFT", sidebar, "BOTTOMRIGHT", 0, 0)
+
+-- Versionsanzeige unten links in der Sidebar
+local versionLabel = sidebar:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+versionLabel:SetPoint("BOTTOMLEFT", sidebar, "BOTTOMLEFT", 8, 8)
+versionLabel:SetText("v" .. MyLoot.VERSION)
 
 
 function MyLoot.ShowView(view)

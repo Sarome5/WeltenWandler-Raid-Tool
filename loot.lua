@@ -133,21 +133,19 @@ function MyLoot.TryAddGroupLootItem(itemLink)
     return
   end
 
-  -- Housing-Items ignorieren (Behausung Dekoration)
-  local _, _, _, _, _, itemType = GetItemInfo(itemLink)
+  -- Nur Ausrüstungs-Items: Flasks, Tränke, Conjured Items usw. ignorieren
+  local _, _, quality, _, _, itemType, _, _, equipSlot = GetItemInfo(itemLink)
   if itemType == "Behausung Dekoration" then
     LootDebug("Housing-Item ignoriert: " .. itemID)
     return
   end
-
-  -- Duplikat prüfen (selbe ItemID + noch nicht vergeben)
-  for _, existing in ipairs(boss.items) do
-    if existing.itemLink and existing.itemLink:match("item:(%d+)") == itemID
-       and existing.status ~= "assigned" then
-      LootDebug("Group Loot Item bereits vorhanden: " .. itemID)
-      return
-    end
+  if not equipSlot or equipSlot == "" then
+    LootDebug("Nicht-Ausrüstungs-Item ignoriert: " .. itemID)
+    return
   end
+
+  -- Kein Duplikat-Check: Chat feuert exakt einmal pro physischem Drop.
+  -- Mehrfachdrops (auch gleicher Hitem) werden korrekt als separate Einträge getrackt.
 
   boss._lootUIDCounter = (boss._lootUIDCounter or 0) + 1
   local uid = itemID .. "-" .. boss._lootUIDCounter
@@ -166,11 +164,18 @@ function MyLoot.TryAddGroupLootItem(itemLink)
   MyLoot.Render()
 end
 
+-- Entfernt den Chat-Kanal-Präfix aus einem Spielernamen
+-- (WoW sendet "[Beute]: " manchmal als Hyperlink: |Hchannel:...|h[Beute]|h)
+local function StripChannelPrefix(str)
+  if not str then return str end
+  str = str:gsub("^|c%x+", "")                      -- führender Farbcode
+  str = str:gsub("^|H[^|]*|h%[.-%]|h|r?:%s*", "")  -- Hyperlink-Format
+  str = str:gsub("^%[[^%]]+%]:%s*", "")             -- Klartext-Format [Kanal]:
+  return str:match("^%s*(.-)%s*$")                   -- Whitespace trimmen
+end
+
 function MyLoot.TryAutoAssignFromChat(msg)
   if not MyLoot._awaitingLootAssignment then return end
-
-  -- "[Beute]: " Präfix entfernen (Group Loot System-Nachrichten)
-  msg = msg:gsub("^%[Beute%]:%s*", "")
 
   LootDebug("Chat: " .. msg)
 
@@ -205,21 +210,21 @@ function MyLoot.TryAutoAssignFromChat(msg)
 
   -- Muster 2a: "[Spieler] erhält Beute: [Item]" → anderer Spieler
   elseif msg:find("erhält Beute:") then
-    player = msg:match("^(.+) erhält Beute:")
-    if player then player = player:match("^%s*(.-)%s*$") end
+    player = msg:match("(.+) erhält Beute:")
+    if player then player = StripChannelPrefix(player) end
     LootDebug("Muster 2a (erhält): " .. tostring(player))
 
   -- Muster 2b: "[Spieler] bekommt Beute: [Item]" → anderer Spieler
   elseif msg:find("bekommt Beute:") then
-    player = msg:match("^(.+) bekommt Beute:")
-    if player then player = player:match("^%s*(.-)%s*$") end
+    player = msg:match("(.+) bekommt Beute:")
+    if player then player = StripChannelPrefix(player) end
     LootDebug("Muster 2b (bekommt): " .. tostring(player))
 
   -- Muster 3: "[Spieler] hat gewonnen (Bedarf - 98, Sekundäre Spezialisierung): [Item]"
   elseif msg:find("hat gewonnen") then
-    local winner = msg:match("^(.+) hat gewonnen %(")
+    local winner = msg:match("(.+) hat gewonnen %(")
     if winner then
-      player = winner:match("^%s*(.-)%s*$")
+      player = StripChannelPrefix(winner)
       local inner = msg:match("hat gewonnen %((.-)%)")
       if inner then
         -- Würfelzahl extrahieren (Format: "Bedarf - 98" oder "Gier - 42")
@@ -362,95 +367,103 @@ function MyLoot.HandleLootOpened()
   end
 
   if not boss._lootInitialized then
-    boss._slotUIDs        = {}
-    boss._sentClientUIDs  = {}  -- verhindert Doppel-Send beim Retry (non-raidlead)
     boss._lootUIDCounter  = 0
     boss._lootInitialized = true
   end
 
   local numItems = GetNumLootItems()
-
-  -- Loot-Fenster bereits geschlossen (z.B. nach Retry) → nichts zu tun
   if numItems == 0 then
     MyLoot._isLooting = false
     return
   end
 
+  -- Schritt 1: Gültige Items aus Slots sammeln
+  local slotItems = {}  -- { link, hitem, itemID }
   for i = 1, numItems do
     if LootSlotHasItem(i) then
-      -- GetLootSlotInfo liefert Qualität direkt aus dem Loot-Frame (kein Item-Cache nötig)
       local texture, _, quantity, currencyID, quality = GetLootSlotInfo(i)
-
       if not texture then
-        -- Slot noch nicht gerendert → nächsten Frame neu versuchen (wie RCLC)
+        -- Slot noch nicht gerendert → nächsten Frame neu versuchen
         MyLoot._isLooting = false
         C_Timer.After(0, MyLoot.HandleLootOpened)
         return
       end
-
-      -- Währungen und leere Slots überspringen
       if not currencyID and quantity and quantity > 0 and quality and quality >= 3 then
         local link = GetLootSlotLink(i)
         if link and link:find("|Hitem:") then
-          -- Quelle des Loot-Slots (Boss-GUID) für Debug-Ausgabe
           local _, sourceName = GetLootSourceInfo(i)
           LootDebug(string.format("Slot %d: %s [Quelle: %s]", i, link:match("%[(.-)%]") or "?", sourceName or "?"))
-
           local itemID = link:match("item:(%d+)")
-
-          -- Blacklist-Prüfung: Item überspringen wenn auf der Blacklist
-          local isBlacklisted = WRT_BlacklistData and WRT_BlacklistData.items
-                             and WRT_BlacklistData.items[tonumber(itemID)]
-          -- Housing-Items ignorieren (Behausung Dekoration)
-          local _, _, _, _, _, lootItemType = GetItemInfo(link)
-          if not isBlacklisted and lootItemType == "Behausung Dekoration" then
-            LootDebug("Housing-Item ignoriert (LootOpened): " .. (itemID or "?"))
-            isBlacklisted = true
+          -- Blacklist
+          local skip = WRT_BlacklistData and WRT_BlacklistData.items
+                    and WRT_BlacklistData.items[tonumber(itemID)]
+          if not skip then
+            local _, _, _, _, _, lootItemType, _, _, lootEquipSlot = GetItemInfo(link)
+            if lootItemType == "Behausung Dekoration" then
+              LootDebug("Housing-Item ignoriert (LootOpened): " .. (itemID or "?"))
+              skip = true
+            elseif not lootEquipSlot or lootEquipSlot == "" then
+              LootDebug("Nicht-Ausrüstungs-Item ignoriert (LootOpened): " .. (itemID or "?"))
+              skip = true
+            end
           end
-          if not isBlacklisted then
-            local uid = boss._slotUIDs[i]
-
-            if not uid then
-              boss._lootUIDCounter = (boss._lootUIDCounter or 0) + 1
-              uid = itemID .. "-" .. boss._lootUIDCounter
-              boss._slotUIDs[i] = uid
-            end
-
-            local exists = false
-            for _, existing in ipairs(boss.items) do
-              if existing.uid == uid then exists = true; break end
-            end
-
-            if not exists then
-              if MyLootDB.role == "raidlead" then
-                table.insert(boss.items, {
-                  uid        = uid,
-                  itemLink   = link,
-                  slot       = i,
-                  processed  = false,
-                  session    = nil,
-                  assignedTo = nil,
-                  type       = nil,
-                  status     = "new",
-                  ui         = { selectedPlayer = nil, selectedType = "MS" }
-                })
-              elseif not boss._sentClientUIDs[uid] then
-                -- nur senden wenn noch nicht gesendet (Retry-Schutz)
-                boss._sentClientUIDs[uid] = true
-                MyLoot.SendClientLoot(link, uid)
-              end
-            end
-          end  -- not isBlacklisted
+          if not skip then
+            table.insert(slotItems, {
+              link   = link,
+              hitem  = link:match("Hitem:([^|]+)"),
+              itemID = itemID,
+            })
+          end
         end
       end
     end
   end
 
-  MyLoot.ProcessLootTable()
-
-  if MyLootDB.role ~= "raidlead" then
-    MyLoot.QueueMessage("MYLOOT_SYNC", "CLIENT_DONE", "RAID")
+  -- Schritt 2: Anzahl pro Hitem in Slots zählen
+  local slotCounts = {}
+  for _, s in ipairs(slotItems) do
+    slotCounts[s.hitem] = (slotCounts[s.hitem] or 0) + 1
   end
+
+  -- Schritt 3: Anzahl pro Hitem bereits in boss.items zählen (alle Statuses)
+  local existingCounts = {}
+  for _, existing in ipairs(boss.items) do
+    if existing.itemLink then
+      local h = existing.itemLink:match("Hitem:([^|]+)")
+      if h then existingCounts[h] = (existingCounts[h] or 0) + 1 end
+    end
+  end
+
+  -- Schritt 4: Fehlende Items ergänzen (Slot-Anzahl - vorhandene Anzahl)
+  -- Speichert einen Link-Vertreter pro Hitem für die Eintragserstellung
+  local linkByHitem = {}
+  for _, s in ipairs(slotItems) do
+    linkByHitem[s.hitem] = linkByHitem[s.hitem] or s
+  end
+
+  for hitem, slotCount in pairs(slotCounts) do
+    local missing = slotCount - (existingCounts[hitem] or 0)
+    if missing > 0 then
+      local s = linkByHitem[hitem]
+      for _ = 1, missing do
+        boss._lootUIDCounter = (boss._lootUIDCounter or 0) + 1
+        local uid = s.itemID .. "-" .. boss._lootUIDCounter
+        table.insert(boss.items, {
+          uid        = uid,
+          itemLink   = s.link,
+          processed  = false,
+          session    = nil,
+          assignedTo = nil,
+          type       = nil,
+          status     = "new",
+          ui         = { selectedPlayer = nil, selectedType = "MS" }
+        })
+        LootDebug("LootOpened Fallback hinzugefügt: " .. s.itemID)
+      end
+    end
+  end
+
+  MyLoot.ProcessLootTable()
 
   C_Timer.After(1, function()
     MyLoot._isLooting = false
@@ -799,15 +812,28 @@ function MyLoot.HandleSyncMessage(msg, sender)
       localIndex = #MyLootDB.raid.bosses
     end
 
-    local exists = false
+    -- Reconciliation: chat-getrackte Items (status="new", kein session) mit Sync-Daten abgleichen
+    -- Mehrfachdrops: jeder LOOT_NEW reconciliert genau einen noch nicht abgeglichenen Eintrag
+    local syncHitem = itemLink:match("Hitem:([^|]+)")
+    local reconciled = false
     for _, l in ipairs(boss.items) do
       if l.uid == uid then
-        exists = true
+        reconciled = true; break  -- bereits bekannt
+      end
+      if syncHitem and l.itemLink
+         and l.itemLink:match("Hitem:([^|]+)") == syncHitem
+         and not l.session then
+        -- Chat-getracks Item gefunden → Session + UID aktualisieren
+        l.uid     = uid
+        l.session = session
+        l.status  = "synced"
+        reconciled = true
         break
       end
     end
 
-    if not exists then
+    if not reconciled then
+      -- DC/Join-Szenario: Item war nicht im Chat → neu anlegen
       table.insert(boss.items, {
         uid = uid,
         session = session,
