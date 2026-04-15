@@ -24,6 +24,7 @@ MyLoot.isEncounterActive        = false
 MyLoot.isBossActive             = false
 MyLoot.hasLootedBoss            = false
 MyLoot._activeLootBossIndex     = nil   -- eingefroren bei ENCOUNTER_END, unabhängig vom Dropdown
+MyLoot._awaitingItemDetection   = false -- true zwischen ENCOUNTER_END (Kill) und LOOT_CLOSED
 MyLoot._awaitingLootAssignment  = false -- true zwischen ENCOUNTER_END (Kill) und nächstem ENCOUNTER_START
 
 C_ChatInfo.RegisterAddonMessagePrefix("MYLOOT")
@@ -625,16 +626,50 @@ frame:SetScript("OnEvent", function(_, event, ...)
     if MyLoot.hasLootedBoss then return end
     MyLoot.hasLootedBoss = true
 
-    -- 10s Erkennungsfenster ab jetzt: [Beute]-Nachrichten kommen sofort nach LOOT_READY
     if MyLoot._awaitingItemDetection then
+      -- Normal-Kill: Chat ist primary für Item-Erkennung.
+      -- 10s Timer startet → danach Raidlead-Broadcast als Confirmation/DC-Sync.
       C_Timer.After(10, function()
         MyLoot._awaitingItemDetection = false
         if MyLoot.LootDebug then MyLoot.LootDebug("Item-Erkennungsfenster geschlossen (10s)") end
-      end)
-    end
 
-    MyLoot._seenLoot = {}
-    MyLoot.HandleLootOpened()
+        -- Raidlead sendet kompletten Boss-Loot als LOOT_NEW Confirmation.
+        -- Empfänger: Item bereits vorhanden → Reconcile; fehlt (DC) → neu anlegen.
+        if MyLootDB.role == "raidlead" then
+          local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
+          local boss = idx and MyLootDB.raid.bosses[idx]
+          if boss and boss.items then
+            for _, loot in ipairs(boss.items) do
+              -- Session zuweisen falls noch nicht vorhanden (chat-getrackte Items)
+              if not loot.session then
+                boss._sessionCounter = (boss._sessionCounter or 0) + 1
+                loot.session = boss._sessionCounter
+                if not loot.uid then
+                  local itemID = loot.itemLink:match("item:(%d+)")
+                  loot.uid = itemID .. "-" .. loot.session
+                end
+              end
+              MyLoot.SendNewItem(loot)
+              -- Bereits vergebene Items mitschicken (schnelle Würfe innerhalb 10s)
+              if loot.assignedTo then
+                local syncMsg = "LOOT_SYNC:" .. idx .. ":" .. loot.session .. ":"
+                             .. loot.assignedTo .. ":" .. (loot.type or "nil")
+                MyLoot.QueueMessage("MYLOOT_SYNC", syncMsg, "RAID")
+              end
+            end
+            if MyLoot.LootDebug then
+              MyLoot.LootDebug("Raidlead Broadcast: " .. #boss.items .. " Items gesendet")
+            end
+          end
+        end
+      end)
+      -- HandleLootOpened NICHT aufrufen – Chat übernimmt Item-Erkennung
+    else
+      -- Fallback: kein aktives Detection-Fenster (DC/Join, Relog während Loot offen)
+      -- Loot-Slots direkt lesen um fehlende Items zu ergänzen
+      MyLoot._seenLoot = {}
+      MyLoot.HandleLootOpened()
+    end
 
   elseif event == "LOOT_CLOSED" then
     if MyLoot.isBossActive then
@@ -667,11 +702,19 @@ frame:SetScript("OnEvent", function(_, event, ...)
     end
 
   elseif event == "PLAYER_ENTERING_WORLD" then
-    -- Nach Ladescreen/Instanzwechsel: Würfelerkennung reaktivieren wenn noch Boss-Daten vorhanden
-    -- (verhindert dass _awaitingLootAssignment nach Relog/Reload auf false bleibt)
-    local hasBosses = MyLootDB.raid.bosses and #MyLootDB.raid.bosses > 0
-    if hasBosses and not MyLoot._awaitingLootAssignment then
-      MyLoot._awaitingLootAssignment = true
+    -- Nach DC/Relog: Vergabe-Tracking reaktivieren, aber NUR wenn noch unvergebene Items
+    -- für den aktiven Boss existieren (verhindert Re-Aktivierung nach normalem Teleport)
+    if not MyLoot._awaitingLootAssignment then
+      local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
+      local boss = idx and MyLootDB.raid.bosses and MyLootDB.raid.bosses[idx]
+      if boss and boss.items then
+        for _, item in ipairs(boss.items) do
+          if not item.assignedTo then
+            MyLoot._awaitingLootAssignment = true
+            break
+          end
+        end
+      end
     end
 
   elseif event == "GROUP_ROSTER_UPDATE" then
@@ -707,6 +750,10 @@ frame:SetScript("OnEvent", function(_, event, ...)
       MyLoot._awaitingItemDetection  = true
       -- Phase 2: Zuweisung tracken bis alle Items vergeben oder nächster Pull
       MyLoot._awaitingLootAssignment = true
+    else
+      -- Wipe: Encounter-Flags zurücksetzen damit LOOT_READY nicht fälschlich feuert
+      MyLoot.isEncounterActive = false
+      MyLoot.isBossActive      = false
     end
   end
 end)

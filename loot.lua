@@ -213,7 +213,8 @@ function MyLoot.TryAutoAssignFromChat(msg)
   local isBareDrop = hasBeutePrefix
                  and not msg:find("hat gewonnen")
                  and not msg:find("habt gewonnen")  -- eigener Charakter gewinnt
-                 and not msg:find("habt gepasst")
+                 and not msg:find("hat gepasst")    -- anderer Spieler passt
+                 and not msg:find("habt gepasst")   -- eigener Charakter passt
                  and not msg:find("Beuteverteilung")
   if isBareDrop then
     if canDetect then MyLoot.TryAddGroupLootItem(itemLink) end
