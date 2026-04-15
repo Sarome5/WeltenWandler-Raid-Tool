@@ -115,8 +115,45 @@ local function LootDebug(msg)
     print("|cff00ccff[WRT Debug]|r " .. msg)
   end
 end
+MyLoot.LootDebug = LootDebug  -- für Aufrufe aus main.lua (z.B. Timer-Callbacks)
 
--- Fügt ein Item aus dem Group-Loot-Chat zu boss.items hinzu (falls noch nicht vorhanden)
+-- Prüft ob ein Item in die Loot-Liste soll:
+--   Gear (equippable, Selten+, kein Bag) ODER Rezept ODER Spielzeug
+-- Gibt true zurück wenn das Item getrackt werden soll.
+local function IsValidLootItem(itemLink)
+  local itemID = itemLink:match("item:(%d+)")
+  if not itemID then return false end
+
+  -- Blacklist
+  if WRT_BlacklistData and WRT_BlacklistData.items
+     and WRT_BlacklistData.items[tonumber(itemID)] then
+    LootDebug("Blacklist-Item ignoriert: " .. itemID)
+    return false
+  end
+
+  local _, _, quality, _, _, itemType, _, _, equipSlot = GetItemInfo(itemLink)
+
+  -- Rezept (z.B. Handwerksschriften von Bossen)
+  if itemType == "Rezept" then return true end
+
+  -- Spielzeug (Ruhesteine, Reittiere als Toy etc.)
+  if C_ToyBox and C_ToyBox.IsToy and C_ToyBox.IsToy(tonumber(itemID)) then return true end
+
+  -- Gear: equippable, Qualität Selten+ (3), kein Bag, kein Housing
+  if itemType == "Behausung Dekoration" then
+    LootDebug("Housing-Item ignoriert: " .. itemID); return false
+  end
+  if quality and quality < 3 then
+    LootDebug("Qualität zu niedrig: " .. itemID); return false
+  end
+  if not equipSlot or equipSlot == "" or equipSlot == "INVTYPE_BAG" then
+    LootDebug("Nicht-Ausrüstungs-Item ignoriert: " .. itemID); return false
+  end
+
+  return true
+end
+
+-- Fügt ein Item aus dem Group-Loot-Chat zu boss.items hinzu
 function MyLoot.TryAddGroupLootItem(itemLink)
   local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
   local boss = idx and MyLootDB.raid.bosses[idx]
@@ -125,25 +162,7 @@ function MyLoot.TryAddGroupLootItem(itemLink)
   local itemID = itemLink:match("item:(%d+)")
   if not itemID then return end
 
-  -- Blacklist prüfen
-  local isBlacklisted = WRT_BlacklistData and WRT_BlacklistData.items
-                     and WRT_BlacklistData.items[tonumber(itemID)]
-  if isBlacklisted then
-    LootDebug("Group Loot Item auf Blacklist: " .. itemID)
-    return
-  end
-
-  -- Nur Raid-Gear: Qualität Selten+ (3), equippable, kein Bag, kein Housing
-  local _, _, quality, _, _, itemType, _, _, equipSlot = GetItemInfo(itemLink)
-  if itemType == "Behausung Dekoration" then
-    LootDebug("Housing-Item ignoriert: " .. itemID); return
-  end
-  if quality and quality < 3 then
-    LootDebug("Qualität zu niedrig ignoriert: " .. itemID); return
-  end
-  if not equipSlot or equipSlot == "" or equipSlot == "INVTYPE_BAG" then
-    LootDebug("Nicht-Ausrüstungs-Item ignoriert: " .. itemID); return
-  end
+  if not IsValidLootItem(itemLink) then return end
 
   -- Kein Duplikat-Check: Chat feuert exakt einmal pro physischem Drop.
   -- Mehrfachdrops (auch gleicher Hitem) werden korrekt als separate Einträge getrackt.
@@ -176,7 +195,9 @@ local function StripChannelPrefix(str)
 end
 
 function MyLoot.TryAutoAssignFromChat(msg)
-  if not MyLoot._awaitingLootAssignment then return end
+  local canDetect = MyLoot._awaitingItemDetection
+  local canAssign = MyLoot._awaitingLootAssignment
+  if not canDetect and not canAssign then return end
 
   LootDebug("Chat: " .. msg)
 
@@ -194,9 +215,11 @@ function MyLoot.TryAutoAssignFromChat(msg)
                  and not msg:find("habt gepasst")
                  and not msg:find("Beuteverteilung")
   if isBareDrop then
-    MyLoot.TryAddGroupLootItem(itemLink)
+    if canDetect then MyLoot.TryAddGroupLootItem(itemLink) end
     return
   end
+
+  if not canAssign then return end
 
   local player    = nil
   local lootType  = "MS"
@@ -408,19 +431,7 @@ function MyLoot.HandleLootOpened()
           local _, sourceName = GetLootSourceInfo(i)
           LootDebug(string.format("Slot %d: %s [Quelle: %s]", i, link:match("%[(.-)%]") or "?", sourceName or "?"))
           local itemID = link:match("item:(%d+)")
-          -- Blacklist
-          local skip = WRT_BlacklistData and WRT_BlacklistData.items
-                    and WRT_BlacklistData.items[tonumber(itemID)]
-          if not skip then
-            local _, _, lootQuality, _, _, lootItemType, _, _, lootEquipSlot = GetItemInfo(link)
-            if lootItemType == "Behausung Dekoration" then
-              LootDebug("Housing-Item ignoriert (LootOpened): " .. (itemID or "?")); skip = true
-            elseif lootQuality and lootQuality < 3 then
-              LootDebug("Qualität zu niedrig (LootOpened): " .. (itemID or "?")); skip = true
-            elseif not lootEquipSlot or lootEquipSlot == "" or lootEquipSlot == "INVTYPE_BAG" then
-              LootDebug("Nicht-Ausrüstungs-Item ignoriert (LootOpened): " .. (itemID or "?")); skip = true
-            end
-          end
+          local skip = not IsValidLootItem(link)
           if not skip then
             table.insert(slotItems, {
               link   = link,

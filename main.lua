@@ -621,15 +621,17 @@ frame:SetScript("OnEvent", function(_, event, ...)
     end
 
   elseif event == "LOOT_READY" then
-    if not MyLoot.isEncounterActive then
-      return
-    end
-
-    if MyLoot.hasLootedBoss then
-      return
-    end
-
+    if not MyLoot.isEncounterActive then return end
+    if MyLoot.hasLootedBoss then return end
     MyLoot.hasLootedBoss = true
+
+    -- 10s Erkennungsfenster ab jetzt: [Beute]-Nachrichten kommen sofort nach LOOT_READY
+    if MyLoot._awaitingItemDetection then
+      C_Timer.After(10, function()
+        MyLoot._awaitingItemDetection = false
+        if MyLoot.LootDebug then MyLoot.LootDebug("Item-Erkennungsfenster geschlossen (10s)") end
+      end)
+    end
 
     MyLoot._seenLoot = {}
     MyLoot.HandleLootOpened()
@@ -683,10 +685,11 @@ frame:SetScript("OnEvent", function(_, event, ...)
     if IsInGroup() and instanceType ~= "raid" then return end
 
     MyLoot.UpdateRole()
-    MyLoot.isEncounterActive       = true
-    MyLoot.isBossActive            = true
-    MyLoot.hasLootedBoss           = false
-    MyLoot._awaitingLootAssignment = false  -- neuer Pull → Lootzeitraum schließen
+    MyLoot.isEncounterActive        = true
+    MyLoot.isBossActive             = true
+    MyLoot.hasLootedBoss            = false
+    MyLoot._awaitingItemDetection   = false  -- neuer Pull → beide Fenster schließen
+    MyLoot._awaitingLootAssignment  = false
 
 
   elseif event == "ENCOUNTER_END" then
@@ -698,9 +701,11 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
     if success == 1 then
       MyLoot.AddBoss(encounterName, difficultyID)
-      -- Boss-Index für Loot-Erkennung einfrieren – unabhängig vom Dropdown
-      MyLoot._activeLootBossIndex    = MyLootDB.selectedBossIndex
-      -- Chat-Zuweisung ab jetzt aktiv (bis zum nächsten ENCOUNTER_START)
+      MyLoot._activeLootBossIndex   = MyLootDB.selectedBossIndex
+
+      -- Phase 1: Item-Erkennung bereit (10s Timer startet bei LOOT_READY)
+      MyLoot._awaitingItemDetection  = true
+      -- Phase 2: Zuweisung tracken bis alle Items vergeben oder nächster Pull
       MyLoot._awaitingLootAssignment = true
     end
   end
