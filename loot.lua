@@ -207,11 +207,12 @@ function MyLoot.TryAutoAssignFromChat(msg)
     return
   end
 
-  -- Group Loot: reiner Item-Drop (kein Spieler, kein Würfelergebnis)
-  local isBareDrop = not msg:find("hat gewonnen")
-                 and not msg:find("bekommt Beute")
-                 and not msg:find("erhaltet Beute")
-                 and not msg:find("erhält Beute")
+  -- Group Loot: reiner Item-Drop nur wenn [Beute]: Prefix vorhanden
+  -- und kein Gewinner/Gepasst dahinter steht
+  local hasBeutePrefix = msg:find("%[Beute%]") or msg:find("|h%[Beute%]|h")
+  local isBareDrop = hasBeutePrefix
+                 and not msg:find("hat gewonnen")
+                 and not msg:find("habt gewonnen")  -- eigener Charakter gewinnt
                  and not msg:find("habt gepasst")
                  and not msg:find("Beuteverteilung")
   if isBareDrop then
@@ -244,7 +245,25 @@ function MyLoot.TryAutoAssignFromChat(msg)
     if player then player = StripChannelPrefix(player) end
     LootDebug("Muster 2b (bekommt): " .. tostring(player))
 
-  -- Muster 3: "[Spieler] hat gewonnen (Bedarf - 98, Sekundäre Spezialisierung): [Item]"
+  -- Muster 3a: "Ihr habt gewonnen (...): [Item]" → eigener Charakter
+  elseif msg:find("habt gewonnen") then
+    player = UnitName("player")
+    local inner = msg:match("habt gewonnen %((.-)%)")
+    if inner then
+      local rollNum = inner:match("%- (%d+)")
+      _lastRoll = rollNum and tonumber(rollNum) or nil
+      for key, val in pairs(LOOT_TYPE_MAP) do
+        if inner:find(key, 1, true) then lootType = val; break end
+      end
+      if inner:find("Primäre Spezialisierung", 1, true) then
+        _lastSpec = "Primär"
+      elseif inner:find("Sekundäre Spezialisierung", 1, true) then
+        _lastSpec = "Sekundär"
+      end
+    end
+    LootDebug("Muster 3a (Selbst gewonnen): " .. player .. " → " .. lootType .. " Roll:" .. tostring(_lastRoll))
+
+  -- Muster 3b: "[Spieler] hat gewonnen (Bedarf - 98, Sekundäre Spezialisierung): [Item]"
   elseif msg:find("hat gewonnen") then
     local winner = msg:match("(.+) hat gewonnen %(")
     if winner then
@@ -274,7 +293,7 @@ function MyLoot.TryAutoAssignFromChat(msg)
           _lastSpec = nil
         end
       end
-      LootDebug("Muster 3 (Würfel): " .. tostring(player) .. " → " .. lootType .. " Roll:" .. tostring(_lastRoll))
+      LootDebug("Muster 3b (Würfel): " .. tostring(player) .. " → " .. lootType .. " Roll:" .. tostring(_lastRoll))
     else
       LootDebug("Kein Muster erkannt für: " .. msg)
     end
