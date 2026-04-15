@@ -678,15 +678,23 @@ frame:SetScript("OnEvent", function(_, event, ...)
   elseif event == "ENCOUNTER_START" then
     local encounterID, encounterName = ...
 
+    -- Nur in Schlachtzügen aktiv (solo für Tests erlaubt)
+    local _, _, instanceType = GetInstanceInfo()
+    if IsInGroup() and instanceType ~= "raid" then return end
+
     MyLoot.UpdateRole()
     MyLoot.isEncounterActive       = true
     MyLoot.isBossActive            = true
     MyLoot.hasLootedBoss           = false
-    MyLoot._awaitingLootAssignment = false  -- neuer Pull → Chat-Zuweisung schließen
+    MyLoot._awaitingLootAssignment = false  -- neuer Pull → Lootzeitraum schließen
 
 
   elseif event == "ENCOUNTER_END" then
     local encounterID, encounterName, difficultyID, groupSize, success = ...
+
+    -- Nur in Schlachtzügen aktiv (solo für Tests erlaubt)
+    local _, _, instanceType = GetInstanceInfo()
+    if IsInGroup() and instanceType ~= "raid" then return end
 
     if success == 1 then
       MyLoot.AddBoss(encounterName, difficultyID)

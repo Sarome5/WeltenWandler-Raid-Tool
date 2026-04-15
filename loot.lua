@@ -133,15 +133,16 @@ function MyLoot.TryAddGroupLootItem(itemLink)
     return
   end
 
-  -- Nur Ausrüstungs-Items: Flasks, Tränke, Conjured Items usw. ignorieren
+  -- Nur Raid-Gear: Qualität Selten+ (3), equippable, kein Bag, kein Housing
   local _, _, quality, _, _, itemType, _, _, equipSlot = GetItemInfo(itemLink)
   if itemType == "Behausung Dekoration" then
-    LootDebug("Housing-Item ignoriert: " .. itemID)
-    return
+    LootDebug("Housing-Item ignoriert: " .. itemID); return
   end
-  if not equipSlot or equipSlot == "" then
-    LootDebug("Nicht-Ausrüstungs-Item ignoriert: " .. itemID)
-    return
+  if quality and quality < 3 then
+    LootDebug("Qualität zu niedrig ignoriert: " .. itemID); return
+  end
+  if not equipSlot or equipSlot == "" or equipSlot == "INVTYPE_BAG" then
+    LootDebug("Nicht-Ausrüstungs-Item ignoriert: " .. itemID); return
   end
 
   -- Kein Duplikat-Check: Chat feuert exakt einmal pro physischem Drop.
@@ -334,6 +335,7 @@ function MyLoot.TryAutoAssignFromChat(msg)
   end
 
   MyLoot.Render()
+  MyLoot.CheckAllItemsAssigned()
 end
 
 function MyLoot.SendNewItem(loot)
@@ -348,6 +350,18 @@ function MyLoot.SendNewItem(loot)
 
   MyLoot.QueueMessage("MYLOOT_SYNC", msg, "RAID")
 
+end
+
+-- Prüft ob alle erkannten Items einen Gewinner haben → Lootzeitraum beenden
+function MyLoot.CheckAllItemsAssigned()
+  local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
+  local boss = idx and MyLootDB.raid.bosses[idx]
+  if not boss or not boss.items or #boss.items == 0 then return end
+  for _, item in ipairs(boss.items) do
+    if not item.assignedTo then return end
+  end
+  MyLoot._awaitingLootAssignment = false
+  LootDebug("Alle Items vergeben – Lootzeitraum beendet")
 end
 
 function MyLoot.HandleLoot(msg)
@@ -398,13 +412,13 @@ function MyLoot.HandleLootOpened()
           local skip = WRT_BlacklistData and WRT_BlacklistData.items
                     and WRT_BlacklistData.items[tonumber(itemID)]
           if not skip then
-            local _, _, _, _, _, lootItemType, _, _, lootEquipSlot = GetItemInfo(link)
+            local _, _, lootQuality, _, _, lootItemType, _, _, lootEquipSlot = GetItemInfo(link)
             if lootItemType == "Behausung Dekoration" then
-              LootDebug("Housing-Item ignoriert (LootOpened): " .. (itemID or "?"))
-              skip = true
-            elseif not lootEquipSlot or lootEquipSlot == "" then
-              LootDebug("Nicht-Ausrüstungs-Item ignoriert (LootOpened): " .. (itemID or "?"))
-              skip = true
+              LootDebug("Housing-Item ignoriert (LootOpened): " .. (itemID or "?")); skip = true
+            elseif lootQuality and lootQuality < 3 then
+              LootDebug("Qualität zu niedrig (LootOpened): " .. (itemID or "?")); skip = true
+            elseif not lootEquipSlot or lootEquipSlot == "" or lootEquipSlot == "INVTYPE_BAG" then
+              LootDebug("Nicht-Ausrüstungs-Item ignoriert (LootOpened): " .. (itemID or "?")); skip = true
             end
           end
           if not skip then
