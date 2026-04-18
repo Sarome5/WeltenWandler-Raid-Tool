@@ -520,31 +520,6 @@ SlashCmdList["WRT"] = function()
   MyLoot.Render()
 end
 
-SLASH_MYLOOTTEST1 = "/loottest"
-SlashCmdList["MYLOOTTEST"] = function()
-  local item = select(2, GetItemInfo(19019)) or "|cff0070dd|Hitem:19019:::::::::::::|h[???]|h|r"
-
-  local boss = MyLoot.GetSelectedBoss()
-
-  if boss then
-    table.insert(boss.items, {
-      itemLink = item,
-      assignedTo = nil,
-      type = nil
-    })
-  end
-
-  table.insert(MyLootDB.raid.bosses, {
-    bossName = "Boss 2",
-    items = {}
-  })
-
-  -- Dummy Prio
-  MyLoot.SetDummyPrio(item)
-
-  MyLootDB.activeItem = item
-  MyLoot.Render()
-end
 
 SLASH_MYLOOTRESET1 = "/wrtreset"
 SlashCmdList["MYLOOTRESET"] = function()
@@ -806,8 +781,8 @@ SlashCmdList["MYLOOTSYNC"] = function()
   MyLoot.BroadcastFullState()
 end
 
-SLASH_WRTVERSIONS1 = "/wrtversions"
-SlashCmdList["WRTVERSIONS"] = function()
+SLASH_WRTCHECK1 = "/wrtcheck"
+SlashCmdList["WRTCHECK"] = function()
   -- Eigene Version senden + alle anderen anfragen
   MyLoot.BroadcastHello()
   local channel = IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or nil)
