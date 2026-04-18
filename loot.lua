@@ -1000,6 +1000,32 @@ function MyLoot.HandleSyncMessage(msg, sender)
         end
       end
     end
+  elseif cmd == "HELLO" then
+    -- rest = Versions-String des Senders
+    -- Realm-Suffix entfernen für lokale Tabelle (Gilde = keine Namenskollisionen)
+    local senderShort = sender:match("^([^%-]+)") or sender
+    MyLoot._addonUsers[senderShort] = rest
+
+    -- Eigene Version vergleichen: bin ich veraltet?
+    if not MyLoot._outdatedNotified
+       and MyLoot.IsVersionNewer and MyLoot.IsVersionNewer(rest, MyLoot.VERSION or "0")
+    then
+      MyLoot._outdatedNotified = true
+      print("|cff00ccff[WRT]|r |cffff4444Dein Addon ist veraltet|r (v"
+         .. (MyLoot.VERSION or "?") .. "). Bitte update auf |cff00ff00v" .. rest .. "|r.")
+    end
+
+    -- Versionsfenster aktualisieren falls geöffnet
+    if MyLoot._versionWindow and MyLoot._versionWindow:IsShown() then
+      MyLoot.RefreshVersionWindow()
+    end
+    return  -- kein Render nötig
+
+  elseif cmd == "HELLO_REQUEST" then
+    -- Jemand fragt nach unserer Version → nach kurzem Zufalls-Delay antworten
+    -- (verhindert dass alle 30 Spieler gleichzeitig antworten)
+    C_Timer.After(math.random() * 2, MyLoot.BroadcastHello)
+    return
   end
 
   MyLoot.Render()

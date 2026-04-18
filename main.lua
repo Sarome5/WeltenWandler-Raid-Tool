@@ -27,6 +27,37 @@ MyLoot._activeLootBossIndex     = nil   -- eingefroren bei ENCOUNTER_END, unabh�
 MyLoot._awaitingItemDetection   = false -- true zwischen ENCOUNTER_END (Kill) und LOOT_CLOSED
 MyLoot._awaitingLootAssignment  = false -- true zwischen ENCOUNTER_END (Kill) und nächstem ENCOUNTER_START
 
+-- Addon-Nutzer Versionserkennung
+MyLoot._addonUsers       = {}    -- { [playerName] = version }
+MyLoot._outdatedNotified = false -- Veraltungswarnung nur einmal pro Session anzeigen
+
+-- Gibt true zurück wenn Version a neuer ist als Version b ("1.0.12" > "1.0.11")
+function MyLoot.IsVersionNewer(a, b)
+  local function parse(v)
+    local t = {}
+    for n in tostring(v):gmatch("%d+") do t[#t+1] = tonumber(n) end
+    return t
+  end
+  local pa, pb = parse(a), parse(b)
+  for i = 1, math.max(#pa, #pb) do
+    local na, nb = pa[i] or 0, pb[i] or 0
+    if na > nb then return true end
+    if na < nb then return false end
+  end
+  return false
+end
+
+-- Sendet eigene Version an alle Raid/Party-Mitglieder
+function MyLoot.BroadcastHello()
+  local channel = IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or nil)
+  if channel then
+    C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", "HELLO:" .. (MyLoot.VERSION or "?"), channel)
+  end
+  -- Immer eigenen Eintrag aktualisieren
+  local self = UnitName("player")
+  if self then MyLoot._addonUsers[self] = MyLoot.VERSION or "?" end
+end
+
 C_ChatInfo.RegisterAddonMessagePrefix("MYLOOT")
 C_ChatInfo.RegisterAddonMessagePrefix("MYLOOT_SYNC")
 
@@ -595,6 +626,11 @@ end
 frame:SetScript("OnEvent", function(_, event, ...)
   if event == "PLAYER_LOGIN" then
     MyLoot.UpdateRole()
+    -- Eigene Version eintragen + nach kurzer Verzögerung an Gruppe senden
+    local self = UnitName("player")
+    if self then MyLoot._addonUsers[self] = MyLoot.VERSION or "?" end
+    C_Timer.After(5, MyLoot.BroadcastHello)
+
     local didReset = MyLoot.CheckAutoReset()
     -- REQUEST_SYNC nach einem Reset überspringen: verhindert dass andere Raidleads
     -- per LOOT_NEW die gerade gelöschten Boss-Einträge neu befüllen
@@ -719,6 +755,12 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
   elseif event == "GROUP_ROSTER_UPDATE" then
     MyLoot.UpdateRole()
+    -- Debounced HELLO: verhindert Spam bei schnellen Mehrfach-Updates
+    if MyLoot._helloTimer then MyLoot._helloTimer:Cancel() end
+    MyLoot._helloTimer = C_Timer.NewTimer(2, function()
+      MyLoot.BroadcastHello()
+      MyLoot._helloTimer = nil
+    end)
 
   elseif event == "ENCOUNTER_START" then
     local encounterID, encounterName = ...
@@ -762,6 +804,17 @@ end)
 SLASH_MYLOOTSYNC1 = "/sync"
 SlashCmdList["MYLOOTSYNC"] = function()
   MyLoot.BroadcastFullState()
+end
+
+SLASH_WRTVERSIONS1 = "/wrtversions"
+SlashCmdList["WRTVERSIONS"] = function()
+  -- Eigene Version senden + alle anderen anfragen
+  MyLoot.BroadcastHello()
+  local channel = IsInRaid() and "RAID" or (IsInGroup() and "PARTY" or nil)
+  if channel then
+    C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", "HELLO_REQUEST", channel)
+  end
+  MyLoot.ShowVersionWindow()
 end
 
 SLASH_WRTDEBUG1 = "/wrtdebug"
