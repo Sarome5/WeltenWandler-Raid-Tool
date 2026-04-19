@@ -738,6 +738,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     end)
 
   elseif event == "ENCOUNTER_START" then
+    if not IsInRaid() then return end
     local encounterID, encounterName = ...
 
     MyLoot.UpdateRole()
@@ -749,6 +750,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
 
   elseif event == "ENCOUNTER_END" then
+    if not IsInRaid() then return end
     local encounterID, encounterName, difficultyID, groupSize, success = ...
 
     if MyLootDB.lootDebug then
