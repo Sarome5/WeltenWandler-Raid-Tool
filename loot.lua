@@ -228,26 +228,12 @@ function MyLoot.TryAutoAssignFromChat(msg)
   local _lastRoll = nil
   local _lastSpec = nil
 
-  -- Muster 1: "Ihr erhaltet Beute: [Item]" → eigener Charakter (kein Loot-Typ)
-  if msg:find("Ihr erhaltet Beute:") then
-    player   = UnitName("player")
-    lootType = nil
-    LootDebug("Muster 1 (Selbst): " .. player)
-
-  -- Muster 2a: "[Spieler] erhält Beute: [Item]" → anderer Spieler
-  elseif msg:find("erhält Beute:") then
-    player = msg:match("(.+) erhält Beute:")
-    if player then player = StripChannelPrefix(player) end
-    LootDebug("Muster 2a (erhält): " .. tostring(player))
-
-  -- Muster 2b: "[Spieler] bekommt Beute: [Item]" → anderer Spieler
-  elseif msg:find("bekommt Beute:") then
-    player = msg:match("(.+) bekommt Beute:")
-    if player then player = StripChannelPrefix(player) end
-    LootDebug("Muster 2b (bekommt): " .. tostring(player))
+  -- Nur "hat/habt gewonnen" für Zuweisung nutzen.
+  -- "erhält/bekommt Beute" sind Lieferbestätigungen und kommen nach dem Würfelergebnis –
+  -- bei Mehrfachdrops würden sie das zweite Item fälschlich dem ersten Gewinner zuweisen.
 
   -- Muster 3a: "Ihr habt gewonnen (...): [Item]" → eigener Charakter
-  elseif msg:find("habt gewonnen") then
+  if msg:find("habt gewonnen") then
     player = UnitName("player")
     local inner = msg:match("habt gewonnen %((.-)%)")
     if inner then
