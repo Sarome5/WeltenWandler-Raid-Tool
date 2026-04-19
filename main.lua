@@ -740,10 +740,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
   elseif event == "ENCOUNTER_START" then
     local encounterID, encounterName = ...
 
-    -- Nur in Schlachtzügen aktiv (solo für Tests erlaubt)
-    local _, _, instanceType = GetInstanceInfo()
-    if IsInGroup() and instanceType ~= "raid" then return end
-
     MyLoot.UpdateRole()
     MyLoot.isEncounterActive        = true
     MyLoot.isBossActive             = true
@@ -754,10 +750,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
   elseif event == "ENCOUNTER_END" then
     local encounterID, encounterName, difficultyID, groupSize, success = ...
-
-    -- Nur in Schlachtzügen aktiv (solo für Tests erlaubt)
-    local _, _, instanceType = GetInstanceInfo()
-    if IsInGroup() and instanceType ~= "raid" then return end
 
     if MyLootDB.lootDebug then
       print("|cff00ccff[WRT Debug]|r ENCOUNTER_END:", tostring(encounterName),
