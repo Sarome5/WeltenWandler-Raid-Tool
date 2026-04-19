@@ -252,9 +252,10 @@ function MyLoot.TryAutoAssignFromChat(msg)
 
   -- Muster 3b: "[Spieler] hat gewonnen (Bedarf - 98, Sekundäre Spezialisierung): [Item]"
   elseif msg:find("hat gewonnen") then
-    local winner = msg:match("(.+) hat gewonnen %(")
+    -- [^ ]+ statt .+ : WoW-Namen haben keine Leerzeichen → [Beute]: Prefix wird übersprungen
+    local winner = msg:match("([^ ]+) hat gewonnen %(")
     if winner then
-      player = StripChannelPrefix(winner)
+      player = winner
       local inner = msg:match("hat gewonnen %((.-)%)")
       if inner then
         -- Würfelzahl extrahieren (Format: "Bedarf - 98" oder "Gier - 42")
