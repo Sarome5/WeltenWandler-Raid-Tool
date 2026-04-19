@@ -291,11 +291,10 @@ function MyLoot.TryAutoAssignFromChat(msg)
 
   if not player or player == "" then return end
 
-  -- Sicherheits-Strip: [Kanal]: Prefix entfernen falls StripChannelPrefix es nicht erwischt hat
-  player = player:gsub("^|c%x+", "")               -- führender Farbcode
-  player = player:gsub("^|H[^|]*|h%[.-%]|h|r?:%s*", "")  -- Hyperlink-Kanalformat
-  player = player:gsub("^%[.-%]:%s*", "")          -- Klartext [Kanal]:
-  player = player:match("^%s*(.-)%s*$")            -- Whitespace trimmen
+  -- Sicherheits-Strip: [Kanal]: oder |h[Kanal]|h|r: Prefix entfernen.
+  -- Spielernamen enthalten nie "]: " – alles danach ist der echte Name.
+  player = player:match("%]:%s*(.+)$") or player
+  player = player:match("^%s*(.-)%s*$")  -- Whitespace trimmen
   if not player or player == "" then return end
 
   -- Vollständigen Hitem-String extrahieren (inkl. BonusIDs)
