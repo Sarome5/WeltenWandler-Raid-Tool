@@ -759,7 +759,15 @@ frame:SetScript("OnEvent", function(_, event, ...)
     local _, _, instanceType = GetInstanceInfo()
     if IsInGroup() and instanceType ~= "raid" then return end
 
-    if success == 1 then
+    if MyLootDB.lootDebug then
+      print("|cff00ccff[WRT Debug]|r ENCOUNTER_END:", tostring(encounterName),
+            "success=", tostring(success), "type=", type(success))
+    end
+
+    -- success kann je nach WoW-Version Integer (1/0) oder Boolean (true/false) sein
+    local isKill = (success == 1 or success == true)
+
+    if isKill then
       MyLoot.AddBoss(encounterName, difficultyID)
       MyLoot._activeLootBossIndex   = MyLootDB.selectedBossIndex
 
