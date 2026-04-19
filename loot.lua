@@ -291,6 +291,13 @@ function MyLoot.TryAutoAssignFromChat(msg)
 
   if not player or player == "" then return end
 
+  -- Sicherheits-Strip: [Kanal]: Prefix entfernen falls StripChannelPrefix es nicht erwischt hat
+  player = player:gsub("^|c%x+", "")               -- führender Farbcode
+  player = player:gsub("^|H[^|]*|h%[.-%]|h|r?:%s*", "")  -- Hyperlink-Kanalformat
+  player = player:gsub("^%[.-%]:%s*", "")          -- Klartext [Kanal]:
+  player = player:match("^%s*(.-)%s*$")            -- Whitespace trimmen
+  if not player or player == "" then return end
+
   -- Vollständigen Hitem-String extrahieren (inkl. BonusIDs)
   local chatItemString = itemLink:match("Hitem:([^|]+)")
   local chatItemID     = itemLink:match("item:(%d+)")
@@ -629,6 +636,51 @@ end
 -- =========================
 -- RENDER LOOT LISTE
 -- =========================
+
+-- Gibt den hex-Farbstring einer Klasse für einen Spielernamen zurück.
+-- Durchsucht Raid/Party per Unit-Token; cached das Ergebnis in knownClasses.
+local function GetClassColorStr(playerName)
+  if not playerName then return "ffffffff" end
+
+  MyLootDB.knownClasses = MyLootDB.knownClasses or {}
+
+  -- Kurzname für Cache-Lookup (ohne Realm-Suffix)
+  local shortName = playerName:match("^([^%-]+)") or playerName
+
+  -- Cache prüfen
+  local cached = MyLootDB.knownClasses[shortName] or MyLootDB.knownClasses[playerName]
+  if cached and RAID_CLASS_COLORS[cached] then
+    return RAID_CLASS_COLORS[cached].colorStr
+  end
+
+  -- Live-Lookup über Raid-Roster
+  local maxMembers = IsInRaid() and 40 or (IsInGroup() and GetNumGroupMembers() or 1)
+  local prefix     = IsInRaid() and "raid" or "party"
+  for i = 1, maxMembers do
+    local unit = (i == maxMembers and not IsInRaid()) and "player" or (prefix .. i)
+    local unitShort = UnitName(unit)
+    if unitShort and (unitShort == shortName or unitShort == playerName) then
+      local _, classKey = UnitClass(unit)
+      if classKey then
+        MyLootDB.knownClasses[shortName] = classKey
+        if RAID_CLASS_COLORS[classKey] then
+          return RAID_CLASS_COLORS[classKey].colorStr
+        end
+      end
+    end
+  end
+  -- Eigenen Charakter prüfen
+  if UnitName("player") == shortName then
+    local _, classKey = UnitClass("player")
+    if classKey and RAID_CLASS_COLORS[classKey] then
+      MyLootDB.knownClasses[shortName] = classKey
+      return RAID_CLASS_COLORS[classKey].colorStr
+    end
+  end
+
+  return "ffffffff"
+end
+
 function MyLoot.RenderLoot()
   local ui     = MyLoot.UI
   local y      = -10
@@ -707,8 +759,7 @@ function MyLoot.RenderLoot()
 
       if loot.assignedTo then
         -- Gewinner aus Chat erkannt
-        local classColor = MyLootDB.knownClasses and MyLootDB.knownClasses[loot.assignedTo]
-        local colorStr = classColor and RAID_CLASS_COLORS[classColor] and RAID_CLASS_COLORS[classColor].colorStr or "ffffffff"
+        local colorStr = GetClassColorStr(loot.assignedTo)
 
         local assignTxt = infoFrame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
         assignTxt:SetPoint("LEFT", 0, 0)
