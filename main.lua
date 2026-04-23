@@ -15,6 +15,7 @@ frame:RegisterEvent("PLAYER_ENTERING_WORLD")
 frame:RegisterEvent("LOOT_READY")
 frame:RegisterEvent("ENCOUNTER_LOOT_RECEIVED")
 frame:RegisterEvent("LOOT_HISTORY_UPDATE_DROP")
+frame:RegisterEvent("LOOT_HISTORY_UPDATE_ENCOUNTER")
 frame:RegisterEvent("LOOT_CLOSED")
 frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("ENCOUNTER_START")
@@ -660,10 +661,15 @@ frame:SetScript("OnEvent", function(_, event, ...)
     end
 
   elseif event == "ENCOUNTER_LOOT_RECEIVED" then
-    local encounterID, playerName, itemLink, quantity, className = ...
+    -- Korrekte Reihenfolge laut MRT: encounterID, itemID, itemLink, quantity, playerName, className
+    local encounterID, itemID, itemLink, quantity, playerName, className = ...
     MyLoot.AssignFromLootReceived(playerName, itemLink, className)
 
   elseif event == "LOOT_HISTORY_UPDATE_DROP" then
+    local encounterID = ...
+    MyLoot.UpdateRollTypes(encounterID)
+
+  elseif event == "LOOT_HISTORY_UPDATE_ENCOUNTER" then
     local encounterID = ...
     MyLoot.UpdateRollTypes(encounterID)
 

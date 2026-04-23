@@ -212,8 +212,9 @@ function MyLoot.AssignFromLootReceived(playerName, itemLink, className)
   end
 end
 
--- Aktualisiert den Rolltyp (MS/OS/Transmog) aus C_LootHistory.
--- Wird via LOOT_HISTORY_UPDATE_DROP aufgerufen nachdem Würfelergebnisse feststehen.
+-- Weist Items zu und aktualisiert Rolltypen aus C_LootHistory (MRT-Ansatz).
+-- Wird via LOOT_HISTORY_UPDATE_DROP + LOOT_HISTORY_UPDATE_ENCOUNTER aufgerufen.
+-- Primärquelle: dropInfo.winner.playerName/playerClass + dropInfo.itemHyperlink (mit BonusIDs)
 function MyLoot.UpdateRollTypes(encounterID)
   if not C_LootHistory or not C_LootHistory.GetSortedDropsForEncounter then return end
   local drops = C_LootHistory.GetSortedDropsForEncounter(encounterID)
@@ -225,29 +226,55 @@ function MyLoot.UpdateRollTypes(encounterID)
 
   local needRender = false
   for _, dropInfo in ipairs(drops) do
-    if dropInfo.winner and dropInfo.playerRollState ~= nil then
-      local winnerName = dropInfo.winner.playerName
-      local dropLink   = dropInfo.itemHyperlink
+    if not dropInfo.winner then
+      -- Noch kein Gewinner für diesen Drop bekannt
+    else
+      local winnerName  = dropInfo.winner.playerName
+      local winnerClass = dropInfo.winner.playerClass
+      local dropLink    = dropInfo.itemHyperlink
       if winnerName and dropLink then
+        -- Klassenfarbe cachen (playerClass ist englischer Key wie "WARRIOR")
+        if winnerClass then
+          local shortName = winnerName:match("^([^%-]+)") or winnerName
+          MyLootDB.knownClasses = MyLootDB.knownClasses or {}
+          MyLootDB.knownClasses[shortName] = winnerClass
+        end
+
         local dropHitem = dropLink:match("Hitem:([^|]+)")
         for _, loot in ipairs(boss.items) do
-          if loot.assignedTo == winnerName and not loot.type and loot.itemLink
-             and loot.itemLink:match("Hitem:([^|]+)") == dropHitem then
-            loot.type = rollStateToType[dropInfo.playerRollState]
-            -- Raidlead: aktualisierten Typ syncen
-            if MyLootDB.role == "raidlead" and loot.session and loot.type then
-              local syncMsg = "LOOT_SYNC:" .. idx .. ":" .. loot.session .. ":"
-                           .. winnerName .. ":" .. loot.type
-              MyLoot.QueueMessage("MYLOOT_SYNC", syncMsg, "RAID")
+          if loot.itemLink and loot.itemLink:match("Hitem:([^|]+)") == dropHitem then
+            -- Gewinner zuweisen falls noch nicht geschehen
+            if not loot.assignedTo then
+              loot.assignedTo = winnerName
+              loot.status     = "updated"
+              if MyLootDB.role == "raidlead" and loot.session then
+                local syncMsg = "LOOT_SYNC:" .. idx .. ":" .. loot.session .. ":"
+                             .. winnerName .. ":" .. (loot.type or "nil")
+                MyLoot.QueueMessage("MYLOOT_SYNC", syncMsg, "RAID")
+              end
+              needRender = true
             end
-            needRender = true
+            -- Rolltyp setzen falls Gewinner bekannt und Typ noch fehlt
+            if loot.assignedTo == winnerName and not loot.type
+               and dropInfo.playerRollState ~= nil then
+              loot.type = rollStateToType[dropInfo.playerRollState]
+              if MyLootDB.role == "raidlead" and loot.session and loot.type then
+                local syncMsg = "LOOT_SYNC:" .. idx .. ":" .. loot.session .. ":"
+                             .. winnerName .. ":" .. loot.type
+                MyLoot.QueueMessage("MYLOOT_SYNC", syncMsg, "RAID")
+              end
+              needRender = true
+            end
             break
           end
         end
       end
     end
   end
-  if needRender then MyLoot.Render() end
+  if needRender then
+    MyLoot.Render()
+    MyLoot.CheckAllItemsAssigned()
+  end
 end
 
 function MyLoot.SendNewItem(loot)
