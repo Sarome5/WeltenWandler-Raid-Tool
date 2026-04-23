@@ -131,11 +131,10 @@ end
 -- Weist ein Item dem Gewinner zu (aufgerufen via ENCOUNTER_LOOT_RECEIVED).
 -- playerName/itemLink kommen direkt vom WoW-Event – kein Chat-Parsing nötig.
 -- className wird für Klassenfarben-Cache genutzt.
-function MyLoot.AssignFromLootReceived(playerName, itemLink, className)
+function MyLoot.AssignFromLootReceived(encounterID, playerName, itemLink, className)
   if not MyLoot._awaitingLootAssignment then return end
 
-  local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
-  local boss = idx and MyLootDB.raid.bosses[idx]
+  local idx, boss = MyLoot.FindBossByEncounterID(encounterID)
   if not boss or not boss.items then return end
 
   -- Klassenfarbe direkt aus Event cachen (kein Roster-Lookup nötig)
@@ -208,7 +207,7 @@ function MyLoot.AssignFromLootReceived(playerName, itemLink, className)
       end
     end
     MyLoot.Render()
-    MyLoot.CheckAllItemsAssigned()
+    MyLoot.CheckAllItemsAssigned(idx)
   end
 end
 
@@ -220,8 +219,7 @@ function MyLoot.UpdateRollTypes(encounterID)
   local drops = C_LootHistory.GetSortedDropsForEncounter(encounterID)
   if not drops then return end
 
-  local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
-  local boss = idx and MyLootDB.raid.bosses[idx]
+  local idx, boss = MyLoot.FindBossByEncounterID(encounterID)
   if not boss or not boss.items then return end
 
   local needRender = false
@@ -273,22 +271,18 @@ function MyLoot.UpdateRollTypes(encounterID)
   end
   if needRender then
     MyLoot.Render()
-    MyLoot.CheckAllItemsAssigned()
+    MyLoot.CheckAllItemsAssigned(idx)
   end
 end
 
-function MyLoot.SendNewItem(loot)
-  local bossIndex = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex or 1
+function MyLoot.SendNewItem(loot, bossIndex)
   local encoded = loot.itemLink:gsub(":", ";")
-
   local msg = "LOOT_NEW:" .. bossIndex .. ":" .. loot.session .. ":" .. loot.uid .. ":" .. encoded
-
   MyLoot.QueueMessage("MYLOOT_SYNC", msg, "RAID")
 end
 
 -- Prüft ob alle erkannten Items einen Gewinner haben → Lootzeitraum beenden
-function MyLoot.CheckAllItemsAssigned()
-  local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
+function MyLoot.CheckAllItemsAssigned(idx)
   local boss = idx and MyLootDB.raid.bosses[idx]
   if not boss or not boss.items or #boss.items == 0 then return end
   for _, item in ipairs(boss.items) do
@@ -302,9 +296,7 @@ function MyLoot.HandleLootOpened()
   if MyLoot._isLooting then return end
   MyLoot._isLooting = true
 
-  -- Aktiven Loot-Boss nutzen (eingefroren bei ENCOUNTER_END), nicht den Dropdown-Stand
-  local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
-  local boss = idx and MyLootDB.raid.bosses[idx]
+  local idx, boss = MyLoot.FindBossByEncounterID(MyLoot._activeEncounterID)
   if not boss then
     MyLoot._isLooting = false
     return
@@ -363,7 +355,7 @@ function MyLoot.HandleLootOpened()
     end
   end
 
-  MyLoot.ProcessLootTable()
+  MyLoot.ProcessLootTable(idx)
 
   C_Timer.After(1, function()
     MyLoot._isLooting = false
@@ -371,8 +363,7 @@ function MyLoot.HandleLootOpened()
 end
 
 
-function MyLoot.ProcessLootTable()
-  local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
+function MyLoot.ProcessLootTable(idx)
   local boss = idx and MyLootDB.raid.bosses[idx]
   if not boss then return end
 
@@ -385,7 +376,7 @@ function MyLoot.ProcessLootTable()
 
       -- Raidlead sendet LOOT_NEW als Fallback für DC/Reconnect-Spieler
       if MyLootDB.role == "raidlead" then
-        MyLoot.SendNewItem(loot)
+        MyLoot.SendNewItem(loot, idx)
       end
     end
   end
@@ -655,8 +646,11 @@ function MyLoot.HandleSyncMessage(msg, sender)
     if MyLootDB.role ~= "raidlead" then return end
 
     -- Nur aktuellen/letzten Boss senden – DC-Spieler brauchen nur diesen Boss
-    local bossIndex = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
-    local boss = bossIndex and MyLootDB.raid.bosses[bossIndex]
+    local bossIndex, boss = MyLoot.FindBossByEncounterID(MyLoot._activeEncounterID)
+    if not bossIndex then
+      bossIndex = MyLootDB.selectedBossIndex
+      boss = bossIndex and MyLootDB.raid.bosses[bossIndex]
+    end
     if not boss then return end
 
     local bossInfoMsg = "SYNC_BOSS:" .. bossIndex .. ":" .. (boss.bossName or "") .. ":" .. (boss.difficulty or "")

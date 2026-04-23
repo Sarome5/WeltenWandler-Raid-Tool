@@ -25,8 +25,7 @@ frame:RegisterEvent("GROUP_ROSTER_UPDATE")
 MyLoot.isEncounterActive        = false
 MyLoot.isBossActive             = false
 MyLoot.hasLootedBoss            = false
-MyLoot._activeLootBossIndex     = nil   -- eingefroren bei ENCOUNTER_END, unabhängig vom Dropdown
-MyLoot._activeEncounterID       = nil   -- eingefroren bei ENCOUNTER_END für UID-Generierung
+MyLoot._activeEncounterID       = nil   -- eingefroren bei ENCOUNTER_END für UID-Generierung und Boss-Lookup
 MyLoot._awaitingLootAssignment  = false -- true zwischen ENCOUNTER_END (Kill) und nächstem ENCOUNTER_START
 
 -- Addon-Nutzer Versionserkennung
@@ -380,7 +379,7 @@ local DIFFICULTY_NAMES = {
   [33] = "Timewalking",
 }
 
-function MyLoot.AddBoss(name, difficultyID)
+function MyLoot.AddBoss(name, difficultyID, encounterID)
   local raid = MyLootDB.raid
   if not raid then return end
 
@@ -389,9 +388,10 @@ function MyLoot.AddBoss(name, difficultyID)
   -- Prüfen ob Boss auf dieser Schwierigkeit schon existiert → dann neuer Kill
   for i, b in ipairs(raid.bosses) do
     if b.bossName == name and b.difficulty == diffLabel then
-      b.killID = (b.killID or 1) + 1
-      b.items = {}
-      b._slotUIDs = {}
+      b.encounterID     = encounterID
+      b.killID          = (b.killID or 1) + 1
+      b.items           = {}
+      b._slotUIDs       = {}
       b._lootUIDCounter = 0
       b._sessionCounter = 0
 
@@ -404,12 +404,13 @@ function MyLoot.AddBoss(name, difficultyID)
 
   -- Neuer Eintrag (neuer Boss oder neue Schwierigkeit)
   local boss = {
-    bossName = name,
-    difficulty = diffLabel,
-    items = {},
-    timestamp = time(),
-    killID = 1,
-    bossID = name,
+    bossName    = name,
+    difficulty  = diffLabel,
+    encounterID = encounterID,
+    items       = {},
+    timestamp   = time(),
+    killID      = 1,
+    bossID      = name,
   }
 
   table.insert(raid.bosses, boss)
@@ -417,6 +418,17 @@ function MyLoot.AddBoss(name, difficultyID)
   MyLootDB.selectedBossIndex = #raid.bosses
 
   MyLoot.Render()
+end
+
+-- Sucht Boss-Index und Boss-Objekt anhand der encounterID.
+function MyLoot.FindBossByEncounterID(encounterID)
+  if not encounterID or not MyLootDB.raid or not MyLootDB.raid.bosses then return nil, nil end
+  for i, boss in ipairs(MyLootDB.raid.bosses) do
+    if boss.encounterID == encounterID then
+      return i, boss
+    end
+  end
+  return nil, nil
 end
 
 
@@ -648,22 +660,18 @@ frame:SetScript("OnEvent", function(_, event, ...)
       MyLoot.isEncounterActive = false
       MyLoot.isBossActive = false
 
-      -- aktiven Loot-Boss nutzen, nicht den aktuell im Dropdown gewählten
-      local idx  = MyLoot._activeLootBossIndex
-      local boss = idx and MyLootDB.raid.bosses[idx]
+      local _, boss = MyLoot.FindBossByEncounterID(MyLoot._activeEncounterID)
       if boss then
         boss._lootInitialized = false
         boss._slotUIDs        = nil
         boss._lootUIDCounter  = nil
       end
-      -- _activeLootBossIndex bleibt bis ENCOUNTER_START gültig,
-      -- damit AssignFromLootReceived auch nach LOOT_CLOSED den richtigen Boss findet
     end
 
   elseif event == "ENCOUNTER_LOOT_RECEIVED" then
     -- Korrekte Reihenfolge laut MRT: encounterID, itemID, itemLink, quantity, playerName, className
     local encounterID, itemID, itemLink, quantity, playerName, className = ...
-    MyLoot.AssignFromLootReceived(playerName, itemLink, className)
+    MyLoot.AssignFromLootReceived(encounterID, playerName, itemLink, className)
 
   elseif event == "LOOT_HISTORY_UPDATE_DROP" then
     local encounterID = ...
@@ -687,8 +695,11 @@ frame:SetScript("OnEvent", function(_, event, ...)
     -- Nach DC/Relog: Vergabe-Tracking reaktivieren, aber NUR wenn noch unvergebene Items
     -- für den aktiven Boss existieren (verhindert Re-Aktivierung nach normalem Teleport)
     if not MyLoot._awaitingLootAssignment then
-      local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
-      local boss = idx and MyLootDB.raid.bosses and MyLootDB.raid.bosses[idx]
+      local idx, boss = MyLoot.FindBossByEncounterID(MyLoot._activeEncounterID)
+      if not boss then
+        idx = MyLootDB.selectedBossIndex
+        boss = idx and MyLootDB.raid.bosses and MyLootDB.raid.bosses[idx]
+      end
       if boss and boss.items then
         for _, item in ipairs(boss.items) do
           if not item.assignedTo then
@@ -716,7 +727,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
     MyLoot.isEncounterActive        = true
     MyLoot.isBossActive             = true
     MyLoot.hasLootedBoss            = false
-    MyLoot._activeLootBossIndex     = nil
     MyLoot._awaitingLootAssignment  = false
 
 
@@ -733,8 +743,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     local isKill = (success == 1 or success == true)
 
     if isKill then
-      MyLoot.AddBoss(encounterName, difficultyID)
-      MyLoot._activeLootBossIndex    = MyLootDB.selectedBossIndex
+      MyLoot.AddBoss(encounterName, difficultyID, encounterID)
       MyLoot._activeEncounterID      = encounterID
 
       -- Zuweisung tracken bis alle Items vergeben oder nächster Pull
