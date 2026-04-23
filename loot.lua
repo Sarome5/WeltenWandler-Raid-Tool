@@ -345,7 +345,8 @@ end
 
 
 function MyLoot.ProcessLootTable()
-  local boss = MyLoot.GetSelectedBoss()
+  local idx  = MyLoot._activeLootBossIndex or MyLootDB.selectedBossIndex
+  local boss = idx and MyLootDB.raid.bosses[idx]
   if not boss then return end
 
   for _, loot in ipairs(boss.items) do

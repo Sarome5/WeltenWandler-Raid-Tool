@@ -655,7 +655,8 @@ frame:SetScript("OnEvent", function(_, event, ...)
         boss._slotUIDs        = nil
         boss._lootUIDCounter  = nil
       end
-      MyLoot._activeLootBossIndex = nil
+      -- _activeLootBossIndex bleibt bis ENCOUNTER_START gültig,
+      -- damit AssignFromLootReceived auch nach LOOT_CLOSED den richtigen Boss findet
     end
 
   elseif event == "ENCOUNTER_LOOT_RECEIVED" then
@@ -709,6 +710,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     MyLoot.isEncounterActive        = true
     MyLoot.isBossActive             = true
     MyLoot.hasLootedBoss            = false
+    MyLoot._activeLootBossIndex     = nil
     MyLoot._awaitingLootAssignment  = false
 
 
