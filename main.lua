@@ -102,21 +102,18 @@ function MyLoot.BroadcastFullState()
   if MyLootDB.role ~= "raidlead" then return end
 
   for bossIndex, boss in ipairs(MyLootDB.raid.bosses) do
-    if not boss.inRaid then goto continue_boss end
-    -- Boss-Info vorab senden
-    local bossInfoMsg = "SYNC_BOSS:" .. bossIndex .. ":" .. (boss.bossName or "") .. ":" .. (boss.difficulty or "")
-    C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", bossInfoMsg, "RAID")
+    if boss.inRaid then
+      local bossInfoMsg = "SYNC_BOSS:" .. bossIndex .. ":" .. (boss.bossName or "") .. ":" .. (boss.difficulty or "")
+      C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", bossInfoMsg, "RAID")
 
-    for _, loot in ipairs(boss.items) do
-      -- Item senden
-      local msg = "LOOT_NEW:" .. bossIndex .. ":" .. loot.session .. ":" .. loot.itemLink
-      C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", msg, "RAID")
+      for _, loot in ipairs(boss.items) do
+        local msg = "LOOT_NEW:" .. bossIndex .. ":" .. loot.session .. ":" .. loot.itemLink
+        C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", msg, "RAID")
 
-      -- Status senden (Format: LOOT_SYNC:bossIndex:session:player:type)
-      local syncMsg = "LOOT_SYNC:" .. bossIndex .. ":" .. loot.session .. ":" .. (loot.assignedTo or "nil") .. ":" .. (loot.type or "nil")
-      C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", syncMsg, "RAID")
+        local syncMsg = "LOOT_SYNC:" .. bossIndex .. ":" .. loot.session .. ":" .. (loot.assignedTo or "nil") .. ":" .. (loot.type or "nil")
+        C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", syncMsg, "RAID")
+      end
     end
-    ::continue_boss::
   end
 
 end
