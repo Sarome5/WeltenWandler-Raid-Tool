@@ -18,10 +18,7 @@ local dataObject = LDB:NewDataObject("WeltenWandlerRaidTool", {
       ui:SetShown(not ui:IsShown())
 
       if ui:IsShown() then
-        C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", "REQUEST_SYNC", "RAID")
-        if MyLootDB.role == "raidlead" then
-          MyLoot.BroadcastFullState()
-        end
+        MyLoot.BroadcastHello()
       end
 
       MyLoot.Render()
