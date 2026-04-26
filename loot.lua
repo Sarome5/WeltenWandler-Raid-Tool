@@ -78,6 +78,19 @@ function MyLoot.UpdateRollTypes(encounterID)
       tostring(dropInfo.winner and dropInfo.winner.playerName or "nil"),
       tostring(dropInfo.playerRollState)))
 
+    -- C_LootHistory bestätigt dieses Item als Gruppen-Loot → isGroupLoot setzen,
+    -- unabhängig davon ob schon ein Gewinner feststeht (rollState=4 = noch am würfeln)
+    if dropItemID then
+      for _, loot in ipairs(boss.items) do
+        local lootItemID = loot.itemLink and loot.itemLink:match("item:(%d+)")
+        if lootItemID and lootItemID == dropItemID and not loot.isGroupLoot then
+          loot.isGroupLoot = true
+          LootDebug("  Gruppen-Loot bestätigt (kein Kriegsbeute): " .. dropItemID)
+          needRender = true
+        end
+      end
+    end
+
     if dropInfo.winner and dropLink then
       local winnerName  = dropInfo.winner.playerName
       local winnerClass = dropInfo.winner.playerClass
@@ -93,10 +106,9 @@ function MyLoot.UpdateRollTypes(encounterID)
         local lootItemID = loot.itemLink and loot.itemLink:match("item:(%d+)")
         if lootItemID and lootItemID == dropItemID then
           -- Bereits einem anderen Gewinner zugeordnet → zweite Kopie suchen
-          if loot.isGroupLoot and loot.assignedTo and loot.assignedTo ~= winnerName then
+          if loot.assignedTo and loot.assignedTo ~= winnerName then
             -- continue
           else
-            loot.isGroupLoot = true  -- Von C_LootHistory bestätigt → kein Kriegsbeute-Item
             if loot.assignedTo ~= winnerName then
               LootDebug("  Zuweisung (C_LootHistory): " .. winnerName .. " → " .. tostring(dropItemID)
                 .. (loot.assignedTo and (" [überschreibt " .. loot.assignedTo .. "]") or ""))
