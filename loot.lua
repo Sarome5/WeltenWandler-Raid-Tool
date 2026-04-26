@@ -114,11 +114,11 @@ local function IsValidLootItem(itemLink)
   -- Spielzeug (Ruhesteine, Reittiere als Toy etc.)
   if C_ToyBox and C_ToyBox.IsToy and C_ToyBox.IsToy(tonumber(itemID)) then return true end
 
-  -- Gear: equippable, Qualität Selten+ (3), kein Bag, kein Housing
+  -- Gear: equippable, Qualität Episch+ (4), kein Bag, kein Housing
   if itemType == "Behausung Dekoration" then
     LootDebug("Housing-Item ignoriert: " .. itemID); return false
   end
-  if quality and quality < 3 then
+  if quality and quality < 4 then
     LootDebug("Qualität zu niedrig: " .. itemID); return false
   end
   if not equipSlot or equipSlot == "" or equipSlot == "INVTYPE_BAG" then
@@ -366,7 +366,7 @@ function MyLoot.HandleLootOpened()
         C_Timer.After(0, MyLoot.HandleLootOpened)
         return
       end
-      if not currencyID and quantity and quantity > 0 and quality and quality >= 3 then
+      if not currencyID and quantity and quantity > 0 and quality and quality >= 4 then
         local link = GetLootSlotLink(i)
         if link and link:find("|Hitem:") and IsValidLootItem(link) then
           local uid = encID .. "-" .. killID .. "-" .. i
