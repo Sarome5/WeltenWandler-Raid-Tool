@@ -102,6 +102,7 @@ function MyLoot.BroadcastFullState()
   if MyLootDB.role ~= "raidlead" then return end
 
   for bossIndex, boss in ipairs(MyLootDB.raid.bosses) do
+    if not boss.inRaid then goto continue_boss end
     -- Boss-Info vorab senden
     local bossInfoMsg = "SYNC_BOSS:" .. bossIndex .. ":" .. (boss.bossName or "") .. ":" .. (boss.difficulty or "")
     C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", bossInfoMsg, "RAID")
@@ -115,6 +116,7 @@ function MyLoot.BroadcastFullState()
       local syncMsg = "LOOT_SYNC:" .. bossIndex .. ":" .. loot.session .. ":" .. (loot.assignedTo or "nil") .. ":" .. (loot.type or "nil")
       C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", syncMsg, "RAID")
     end
+    ::continue_boss::
   end
 
 end
@@ -385,10 +387,13 @@ function MyLoot.AddBoss(name, difficultyID, encounterID)
 
   local diffLabel = DIFFICULTY_NAMES[difficultyID] or ("Diff " .. (difficultyID or "?"))
 
+  local killedInRaid = IsInRaid()
+
   -- Prüfen ob Boss auf dieser Schwierigkeit schon existiert → dann neuer Kill
   for i, b in ipairs(raid.bosses) do
     if b.bossName == name and b.difficulty == diffLabel then
       b.encounterID     = encounterID
+      b.inRaid          = killedInRaid
       b.killID          = (b.killID or 1) + 1
       b.items           = {}
       b._slotUIDs       = {}
@@ -407,6 +412,7 @@ function MyLoot.AddBoss(name, difficultyID, encounterID)
     bossName    = name,
     difficulty  = diffLabel,
     encounterID = encounterID,
+    inRaid      = killedInRaid,
     items       = {},
     timestamp   = time(),
     killID      = 1,

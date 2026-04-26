@@ -651,7 +651,7 @@ function MyLoot.HandleSyncMessage(msg, sender)
       bossIndex = MyLootDB.selectedBossIndex
       boss = bossIndex and MyLootDB.raid.bosses[bossIndex]
     end
-    if not boss then return end
+    if not boss or not boss.inRaid then return end
 
     local bossInfoMsg = "SYNC_BOSS:" .. bossIndex .. ":" .. (boss.bossName or "") .. ":" .. (boss.difficulty or "")
     MyLoot.QueueMessage("MYLOOT_SYNC", bossInfoMsg, "WHISPER", sender)
