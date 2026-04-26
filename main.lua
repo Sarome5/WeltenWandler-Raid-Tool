@@ -59,7 +59,6 @@ function MyLoot.BroadcastHello()
   if self then MyLoot._addonUsers[self] = MyLoot.VERSION or "?" end
 end
 
-C_ChatInfo.RegisterAddonMessagePrefix("MYLOOT")
 C_ChatInfo.RegisterAddonMessagePrefix("MYLOOT_SYNC")
 
 -- =========================
@@ -97,27 +96,6 @@ function MyLoot.GetSelectedBoss()
 
   return raid.bosses[index]
 end
-
-function MyLoot.BroadcastFullState()
-  if MyLootDB.role ~= "raidlead" then return end
-
-  for bossIndex, boss in ipairs(MyLootDB.raid.bosses) do
-    if boss.inRaid then
-      local bossInfoMsg = "SYNC_BOSS:" .. bossIndex .. ":" .. (boss.bossName or "") .. ":" .. (boss.difficulty or "")
-      C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", bossInfoMsg, "RAID")
-
-      for _, loot in ipairs(boss.items) do
-        local msg = "LOOT_NEW:" .. bossIndex .. ":" .. loot.session .. ":" .. loot.itemLink
-        C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", msg, "RAID")
-
-        local syncMsg = "LOOT_SYNC:" .. bossIndex .. ":" .. loot.session .. ":" .. (loot.assignedTo or "nil") .. ":" .. (loot.type or "nil")
-        C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", syncMsg, "RAID")
-      end
-    end
-  end
-
-end
-
 
 -- =========================
 -- VIEWS
@@ -525,15 +503,6 @@ end
 SLASH_WRT1 = "/wrt"
 SlashCmdList["WRT"] = function()
   ui:SetShown(not ui:IsShown())
-
-  if ui:IsShown() then
-    C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", "REQUEST_SYNC", "RAID")
-
-    if MyLootDB.role == "raidlead" then
-      MyLoot.BroadcastFullState()
-    end
-  end
-
   MyLoot.Render()
 end
 
@@ -561,23 +530,6 @@ SlashCmdList["WRTIMPORT"] = function(msg)
   MyLoot.ImportString(msg)
 end
 
-
--- =========================
--- ADDON MESSAGE
--- =========================
-function MyLoot.HandleMessage(prefix, message)
-  if prefix ~= ADDON_PREFIX then return end
-
-  local cmd, rest = message:match("^(%w+):(.+)$")
-
-  if cmd == "SELECT" then
-    MyLootDB.activeItem = rest
-  elseif cmd == "ASSIGN" then
-    MyLootDB.winner = rest
-  end
-
-  MyLoot.Render()
-end
 
 -- =========================
 -- EVENTS
@@ -624,11 +576,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
     C_Timer.After(5, MyLoot.BroadcastHello)
 
     local didReset = MyLoot.CheckAutoReset()
-    -- REQUEST_SYNC nach einem Reset überspringen: verhindert dass andere Raidleads
-    -- per LOOT_NEW die gerade gelöschten Boss-Einträge neu befüllen
-    if not didReset then
-      C_ChatInfo.SendAddonMessage("MYLOOT_SYNC", "REQUEST_SYNC", "RAID")
-    end
     -- Prioliste automatisch aus WRT_RaidData laden:
     -- Immer importieren wenn keine Daten vorhanden, oder wenn ein anderer Raid
     -- mit prioList verfügbar ist als der aktuell gespeicherte.
@@ -699,10 +646,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
   elseif event == "CHAT_MSG_ADDON" then
     local prefix, msg, channel, sender = ...
-
-    -- bestehendes System
-    MyLoot.HandleMessage(prefix, msg)
-
     if prefix == "MYLOOT_SYNC" then
       MyLoot.HandleSyncMessage(msg, sender)
     end
@@ -775,11 +718,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
   end
 end)
 
-
-SLASH_MYLOOTSYNC1 = "/sync"
-SlashCmdList["MYLOOTSYNC"] = function()
-  MyLoot.BroadcastFullState()
-end
 
 SLASH_WRTCHECK1 = "/wrtcheck"
 SlashCmdList["WRTCHECK"] = function()

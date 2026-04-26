@@ -1,80 +1,5 @@
 MyLoot = MyLoot or {}
 
--- =========================
--- SEND HELPER
--- =========================
-local function Send(msg)
-  C_ChatInfo.SendAddonMessage("MYLOOT", msg, "RAID")
-end
-
-MyLoot._msgQueue = MyLoot._msgQueue or {}
-MyLoot._sending = false
-MyLoot._clientBuffer = {}
-
-function MyLoot.QueueMessage(prefix, msg, channel, target)
-  table.insert(MyLoot._msgQueue, {
-    prefix = prefix,
-    msg = msg,
-    channel = channel,
-    target = target
-  })
-
-  MyLoot.ProcessQueue()
-end
-
-function MyLoot.ProcessQueue()
-  if MyLoot._sending then return end
-  if #MyLoot._msgQueue == 0 then return end
-
-  MyLoot._sending = true
-
-  local data = table.remove(MyLoot._msgQueue, 1)
-
-  if data.target then
-    C_ChatInfo.SendAddonMessage(data.prefix, data.msg, data.channel, data.target)
-  else
-    C_ChatInfo.SendAddonMessage(data.prefix, data.msg, data.channel)
-  end
-
-  C_Timer.After(0.05, function()
-    MyLoot._sending = false
-    MyLoot.ProcessQueue()
-  end)
-end
-
-function MyLoot.AddItem(itemLink)
-  local boss = MyLoot.GetSelectedBoss()
-  if not boss then return end
-
-  -- ID GENERIERUNG
-  boss._sessionCounter = (boss._sessionCounter or 0) + 1
-  local session = boss._sessionCounter
-
-
-  local itemID = itemLink:match("item:(%d+)")
-  local uid = itemID .. "-" .. session
-
-  local loot = {
-    uid = uid,
-    session = session,
-    itemLink = itemLink,
-    assignedTo = nil,
-    type = nil,
-    status = "new",
-    ui = {
-      selectedPlayer = nil,
-      selectedType = "MS"
-    }
-  }
-
-  table.insert(boss.items, loot)
-
-  -- SYNC + PRIO
-  MyLoot.SendNewItem(loot)
-
-  return loot
-end
-
 
 -- =========================
 -- LOOT HANDLING
@@ -128,89 +53,6 @@ local function IsValidLootItem(itemLink)
   return true
 end
 
--- Weist ein Item dem Gewinner zu (aufgerufen via ENCOUNTER_LOOT_RECEIVED).
--- playerName/itemLink kommen direkt vom WoW-Event – kein Chat-Parsing nötig.
--- className wird für Klassenfarben-Cache genutzt.
-function MyLoot.AssignFromLootReceived(encounterID, playerName, itemLink, className)
-  if not MyLoot._awaitingLootAssignment then return end
-
-  local idx, boss = MyLoot.FindBossByEncounterID(encounterID)
-  if not boss or not boss.items then return end
-
-  -- Klassenfarbe direkt aus Event cachen (kein Roster-Lookup nötig)
-  if className then
-    local shortName = playerName:match("^([^%-]+)") or playerName
-    MyLootDB.knownClasses = MyLootDB.knownClasses or {}
-    MyLootDB.knownClasses[shortName] = className
-  end
-
-  -- Blacklist
-  local chatItemID = itemLink:match("item:(%d+)")
-  if chatItemID and WRT_BlacklistData and WRT_BlacklistData.items
-     and WRT_BlacklistData.items[tonumber(chatItemID)] then
-    LootDebug("Blacklist-Item ignoriert: " .. chatItemID)
-    return
-  end
-
-  local chatHitem = itemLink:match("Hitem:([^|]+)")
-  local assigned  = false
-
-  -- Schritt 1: exakter Hitem-Match, erstes noch nicht zugewiesenes Item
-  for _, loot in ipairs(boss.items) do
-    if not loot.assignedTo and loot.itemLink then
-      if loot.itemLink:match("Hitem:([^|]+)") == chatHitem then
-        loot.assignedTo = playerName
-        loot.status     = "updated"
-        assigned = true
-        LootDebug("Zugewiesen (Hitem): " .. playerName .. " → " .. (chatItemID or "?"))
-        break
-      end
-    end
-  end
-
-  -- Schritt 2: Fallback Base-ItemID (nur wenn eindeutig)
-  if not assigned and chatItemID then
-    local matchCount = 0
-    for _, loot in ipairs(boss.items) do
-      if not loot.assignedTo and loot.itemLink
-         and loot.itemLink:match("item:(%d+)") == chatItemID then
-        matchCount = matchCount + 1
-      end
-    end
-    if matchCount == 1 then
-      for _, loot in ipairs(boss.items) do
-        if not loot.assignedTo and loot.itemLink
-           and loot.itemLink:match("item:(%d+)") == chatItemID then
-          loot.assignedTo = playerName
-          loot.status     = "updated"
-          assigned = true
-          LootDebug("Zugewiesen (ItemID-Fallback): " .. playerName .. " → " .. chatItemID)
-          break
-        end
-      end
-    else
-      LootDebug("Zuweisung übersprungen: " .. matchCount .. "x ItemID " .. chatItemID .. " → mehrdeutig")
-    end
-  end
-
-  if assigned then
-    -- Raidlead: LOOT_SYNC an alle senden
-    if MyLootDB.role == "raidlead" then
-      for _, loot in ipairs(boss.items) do
-        if loot.assignedTo == playerName and loot.session
-           and loot.itemLink and loot.itemLink:match("Hitem:([^|]+)") == chatHitem then
-          local syncMsg = "LOOT_SYNC:" .. idx .. ":" .. loot.session .. ":"
-                       .. playerName .. ":" .. (loot.type or "nil")
-          MyLoot.QueueMessage("MYLOOT_SYNC", syncMsg, "RAID")
-          break
-        end
-      end
-    end
-    MyLoot.Render()
-    MyLoot.CheckAllItemsAssigned(idx)
-  end
-end
-
 -- Weist Items zu und aktualisiert Rolltypen aus C_LootHistory (MRT-Ansatz).
 -- Wird via LOOT_HISTORY_UPDATE_DROP + LOOT_HISTORY_UPDATE_ENCOUNTER aufgerufen.
 -- Primärquelle: dropInfo.winner.playerName/playerClass + dropInfo.itemHyperlink (mit BonusIDs)
@@ -260,22 +102,12 @@ function MyLoot.UpdateRollTypes(encounterID)
                 .. (loot.assignedTo and (" [überschreibt " .. loot.assignedTo .. "]") or ""))
               loot.assignedTo = winnerName
               loot.status     = "updated"
-              if MyLootDB.role == "raidlead" and loot.session then
-                MyLoot.QueueMessage("MYLOOT_SYNC",
-                  "LOOT_SYNC:" .. idx .. ":" .. loot.session .. ":" .. winnerName .. ":" .. (loot.type or "nil"),
-                  "RAID")
-              end
               needRender = true
             end
             if dropInfo.playerRollState ~= nil then
               local newType = rollStateToType[dropInfo.playerRollState]
               if loot.type ~= newType then
                 loot.type = newType
-                if MyLootDB.role == "raidlead" and loot.session and loot.type then
-                  MyLoot.QueueMessage("MYLOOT_SYNC",
-                    "LOOT_SYNC:" .. idx .. ":" .. loot.session .. ":" .. winnerName .. ":" .. loot.type,
-                    "RAID")
-                end
                 needRender = true
               end
             end
@@ -313,12 +145,6 @@ function MyLoot.UpdateRollTypes(encounterID)
     MyLoot.Render()
     MyLoot.CheckAllItemsAssigned(idx)
   end
-end
-
-function MyLoot.SendNewItem(loot, bossIndex)
-  local encoded = loot.itemLink:gsub(":", ";")
-  local msg = "LOOT_NEW:" .. bossIndex .. ":" .. loot.session .. ":" .. loot.uid .. ":" .. encoded
-  MyLoot.QueueMessage("MYLOOT_SYNC", msg, "RAID")
 end
 
 -- Prüft ob alle erkannten Items einen Gewinner haben → Lootzeitraum beenden
@@ -410,14 +236,8 @@ function MyLoot.ProcessLootTable(idx)
   for _, loot in ipairs(boss.items) do
     if not loot.processed then
       loot.processed = true
-
       loot.session = (boss._sessionCounter or 0) + 1
       boss._sessionCounter = loot.session
-
-      -- Raidlead sendet LOOT_NEW als Fallback für DC/Reconnect-Spieler
-      if MyLootDB.role == "raidlead" then
-        MyLoot.SendNewItem(loot, idx)
-      end
     end
   end
 
@@ -678,190 +498,15 @@ function MyLoot.RenderLoot()
 end
 
 function MyLoot.HandleSyncMessage(msg, sender)
-
-  -- =========================
-  -- JOIN SYNC REQUEST
-  -- =========================
-  if msg == "REQUEST_SYNC" then
-    if MyLootDB.role ~= "raidlead" then return end
-
-    -- Nur aktuellen/letzten Boss senden – DC-Spieler brauchen nur diesen Boss
-    local bossIndex, boss = MyLoot.FindBossByEncounterID(MyLoot._activeEncounterID)
-    if not bossIndex then
-      bossIndex = MyLootDB.selectedBossIndex
-      boss = bossIndex and MyLootDB.raid.bosses[bossIndex]
-    end
-    if not boss or not boss.inRaid then return end
-
-    local bossInfoMsg = "SYNC_BOSS:" .. bossIndex .. ":" .. (boss.bossName or "") .. ":" .. (boss.difficulty or "")
-    MyLoot.QueueMessage("MYLOOT_SYNC", bossInfoMsg, "WHISPER", sender)
-
-    for _, loot in ipairs(boss.items) do
-      local encoded = loot.itemLink:gsub(":", ";")
-      local newMsg = "LOOT_NEW:" .. bossIndex .. ":" .. (loot.session or 0) .. ":" .. loot.uid .. ":" .. encoded
-      MyLoot.QueueMessage("MYLOOT_SYNC", newMsg, "WHISPER", sender)
-
-      if loot.assignedTo then
-        local syncMsg = "LOOT_SYNC:" .. bossIndex .. ":" .. (loot.session or 0) .. ":" .. loot.assignedTo .. ":" .. (loot.type or "nil")
-        MyLoot.QueueMessage("MYLOOT_SYNC", syncMsg, "WHISPER", sender)
-      end
-    end
-
-    return
-  end
-
-  -- eigene Nachrichten ignorieren
   local playerName = UnitName("player")
-  local fullPlayerName = playerName .. "-" .. GetNormalizedRealmName()
+  if sender == playerName .. "-" .. GetNormalizedRealmName() then return end
 
-  if sender == fullPlayerName then return end
   local cmd, rest = msg:match("^([^:]+):(.+)$")
+  if not cmd then cmd = msg end
 
-  if not cmd then
-    cmd = msg
-  end
-
-  if cmd == "SYNC_BOSS" then
-    local remoteBossIndex, bossName, difficulty = rest:match("^(%d+):(.+):(.-)$")
-    remoteBossIndex = tonumber(remoteBossIndex)
-    if not remoteBossIndex then return end
-    LootDebug("SYNC_BOSS empfangen von " .. tostring(sender) .. ": [" .. tostring(remoteBossIndex) .. "] " .. tostring(bossName) .. " / " .. tostring(difficulty))
-
-    MyLoot._syncBossMap = MyLoot._syncBossMap or {}
-
-    -- Vorhandenen Boss per Name+Schwierigkeit suchen
-    local localIndex = nil
-    for i, b in ipairs(MyLootDB.raid.bosses) do
-      if b.bossName == bossName and (b.difficulty or "") == (difficulty or "") then
-        localIndex = i
-        break
-      end
-    end
-
-    -- Nicht gefunden → neu anlegen mit echtem Namen
-    if not localIndex then
-      local newBoss = {
-        bossName   = bossName,
-        difficulty = difficulty ~= "" and difficulty or nil,
-        items      = {},
-        killID     = 1,
-      }
-      table.insert(MyLootDB.raid.bosses, newBoss)
-      localIndex = #MyLootDB.raid.bosses
-    end
-
-    MyLoot._syncBossMap[remoteBossIndex] = localIndex
-    return
-
-  elseif cmd == "LOOT_NEW" then
-    local bossIndex, session, uid, itemLink = rest:match("^(%d+):(%d+):([^:]+):(.+)$")
-
-    if not itemLink then
-      bossIndex, session, itemLink = rest:match("^(%d+):(%d+):(.+)$")
-      uid = "fallback-" .. session
-    end
-    itemLink = itemLink:gsub(";", ":")
-    session = tonumber(session)
-    bossIndex = tonumber(bossIndex)
-
-    -- Mapping aus SYNC_BOSS nutzen wenn vorhanden, sonst direkter Index
-    local localIndex = (MyLoot._syncBossMap and MyLoot._syncBossMap[bossIndex]) or bossIndex
-    local boss = MyLootDB.raid.bosses[localIndex]
-
-    if not boss then
-      -- Fallback: Platzhalter (sollte durch SYNC_BOSS eigentlich nicht mehr vorkommen)
-      boss = {
-        bossName = "Boss " .. bossIndex,
-        items = {}
-      }
-      table.insert(MyLootDB.raid.bosses, boss)
-      localIndex = #MyLootDB.raid.bosses
-    end
-
-    -- Reconciliation: Slot-erkannte Items mit Raidlead-Session abgleichen
-    local reconciled = false
-    for _, l in ipairs(boss.items) do
-      if l.uid == uid then
-        -- Item bereits via Slot erkannt → Session aus Raidlead übernehmen
-        if not l.session then
-          l.session = session
-          l.status  = "synced"
-        end
-        reconciled = true
-        break
-      end
-    end
-
-    if not reconciled then
-      -- DC/Reconnect: Item nicht via Slot gesehen → aus LOOT_NEW anlegen
-      table.insert(boss.items, {
-        uid        = uid,
-        session    = session,
-        itemLink   = itemLink,
-        assignedTo = nil,
-        type       = nil,
-        status     = "synced",
-        processed  = true,
-        ui = { selectedPlayer = nil, selectedType = "MS" }
-      })
-    end
-
-  elseif cmd == "LOOT_SYNC" then
-    -- Neues Format: bossIndex:session:player:type
-    -- Altes Format (Fallback): session:player:type
-    local p1, p2, p3, p4 = strsplit(":", rest)
-    local bossIndex, session, player, lootType
-    if p4 then
-      -- neues Format mit bossIndex
-      bossIndex = tonumber(p1)
-      session   = tonumber(p2)
-      player    = p3
-      lootType  = p4
-    else
-      -- altes Format ohne bossIndex (Abwärtskompatibilität)
-      bossIndex = nil
-      session   = tonumber(p1)
-      player    = p2
-      lootType  = p3
-    end
-
-    if bossIndex then
-      -- Mapping aus SYNC_BOSS nutzen wenn vorhanden, sonst direkter Index
-      local localIndex = (MyLoot._syncBossMap and MyLoot._syncBossMap[bossIndex]) or bossIndex
-      local boss = MyLootDB.raid.bosses[localIndex]
-      if boss then
-        for _, loot in ipairs(boss.items) do
-          if loot.session == session then
-            loot.assignedTo = (player ~= "nil") and player or nil
-            loot.type       = (lootType ~= "nil") and lootType or nil
-            loot.status     = "synced"
-            break
-          end
-        end
-      end
-    else
-      -- Fallback: ersten Treffer über alle Bosse (altes Protokoll)
-      local found = false
-      for _, boss in ipairs(MyLootDB.raid.bosses) do
-        if found then break end
-        for _, loot in ipairs(boss.items) do
-          if loot.session == session then
-            loot.assignedTo = (player ~= "nil") and player or nil
-            loot.type       = (lootType ~= "nil") and lootType or nil
-            loot.status     = "synced"
-            found = true
-            break
-          end
-        end
-      end
-    end
-  elseif cmd == "HELLO" then
-    -- rest = Versions-String des Senders
-    -- Realm-Suffix entfernen für lokale Tabelle (Gilde = keine Namenskollisionen)
+  if cmd == "HELLO" then
     local senderShort = sender:match("^([^%-]+)") or sender
     MyLoot._addonUsers[senderShort] = rest
-
-    -- Eigene Version vergleichen: bin ich veraltet?
     if not MyLoot._outdatedNotified
        and MyLoot.IsVersionNewer and MyLoot.IsVersionNewer(rest, MyLoot.VERSION or "0")
     then
@@ -869,19 +514,10 @@ function MyLoot.HandleSyncMessage(msg, sender)
       print("|cff00ccff[WRT]|r |cffff4444Dein Addon ist veraltet|r (v"
          .. (MyLoot.VERSION or "?") .. "). Bitte update auf |cff00ff00v" .. rest .. "|r.")
     end
-
-    -- Versionsfenster aktualisieren falls geöffnet
     if MyLoot._versionWindow and MyLoot._versionWindow:IsShown() then
       MyLoot.RefreshVersionWindow()
     end
-    return  -- kein Render nötig
-
   elseif cmd == "HELLO_REQUEST" then
-    -- Jemand fragt nach unserer Version → nach kurzem Zufalls-Delay antworten
-    -- (verhindert dass alle 30 Spieler gleichzeitig antworten)
     C_Timer.After(math.random() * 2, MyLoot.BroadcastHello)
-    return
   end
-
-  MyLoot.Render()
 end
