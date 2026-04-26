@@ -682,12 +682,10 @@ function MyLoot.HandleSyncMessage(msg, sender)
   end
 
   if cmd == "SYNC_BOSS" then
-    -- Format: SYNC_BOSS:remoteBossIndex:bossName:difficulty
-    -- Baut eine Mapping-Tabelle remoteBossIndex → lokalem Boss-Index auf,
-    -- damit LOOT_NEW/LOOT_SYNC den richtigen Boss treffen.
     local remoteBossIndex, bossName, difficulty = rest:match("^(%d+):(.+):(.-)$")
     remoteBossIndex = tonumber(remoteBossIndex)
     if not remoteBossIndex then return end
+    LootDebug("SYNC_BOSS empfangen von " .. tostring(sender) .. ": [" .. tostring(remoteBossIndex) .. "] " .. tostring(bossName) .. " / " .. tostring(difficulty))
 
     MyLoot._syncBossMap = MyLoot._syncBossMap or {}
 

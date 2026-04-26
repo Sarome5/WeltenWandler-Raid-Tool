@@ -647,11 +647,20 @@ frame:SetScript("OnEvent", function(_, event, ...)
     end
 
   elseif event == "LOOT_READY" then
-    if not MyLoot.isEncounterActive then return end
-    if MyLoot.hasLootedBoss then return end
+    if not MyLoot.isEncounterActive then
+      if MyLootDB.lootDebug then print("|cff00ccff[WRT Debug]|r LOOT_READY ignoriert: isEncounterActive=false") end
+      return
+    end
+    if MyLoot.hasLootedBoss then
+      if MyLootDB.lootDebug then print("|cff00ccff[WRT Debug]|r LOOT_READY ignoriert: hasLootedBoss=true") end
+      return
+    end
     MyLoot.hasLootedBoss = true
-
-    -- RCLC-Ansatz: Loot-Slots direkt lesen, kein Chat-Parsing
+    if MyLootDB.lootDebug then
+      print("|cff00ccff[WRT Debug]|r LOOT_READY – activeEncounterID=", tostring(MyLoot._activeEncounterID))
+      local idx, boss = MyLoot.FindBossByEncounterID(MyLoot._activeEncounterID)
+      print("|cff00ccff[WRT Debug]|r FindBoss →", tostring(idx), tostring(boss and boss.bossName or "NIL"))
+    end
     MyLoot.HandleLootOpened()
 
   elseif event == "LOOT_CLOSED" then
@@ -745,9 +754,12 @@ frame:SetScript("OnEvent", function(_, event, ...)
     if isKill then
       MyLoot.AddBoss(encounterName, difficultyID, encounterID)
       MyLoot._activeEncounterID      = encounterID
-
-      -- Zuweisung tracken bis alle Items vergeben oder nächster Pull
       MyLoot._awaitingLootAssignment = true
+      if MyLootDB.lootDebug then
+        local idx, boss = MyLoot.FindBossByEncounterID(encounterID)
+        print("|cff00ccff[WRT Debug]|r ENCOUNTER_END Kill:", encounterName,
+              "encID=", tostring(encounterID), "idx=", tostring(idx))
+      end
     else
       -- Wipe: Encounter-Flags zurücksetzen damit LOOT_READY nicht fälschlich feuert
       MyLoot.isEncounterActive = false
