@@ -215,53 +215,69 @@ end
 -- Wird via LOOT_HISTORY_UPDATE_DROP + LOOT_HISTORY_UPDATE_ENCOUNTER aufgerufen.
 -- Primärquelle: dropInfo.winner.playerName/playerClass + dropInfo.itemHyperlink (mit BonusIDs)
 function MyLoot.UpdateRollTypes(encounterID)
-  if not C_LootHistory or not C_LootHistory.GetSortedDropsForEncounter then return end
+  if not C_LootHistory or not C_LootHistory.GetSortedDropsForEncounter then
+    LootDebug("UpdateRollTypes: C_LootHistory API nicht verfügbar")
+    return
+  end
   local drops = C_LootHistory.GetSortedDropsForEncounter(encounterID)
+  LootDebug("UpdateRollTypes encID=" .. tostring(encounterID) .. " drops=" .. tostring(drops and #drops or "nil"))
   if not drops then return end
 
   local idx, boss = MyLoot.FindBossByEncounterID(encounterID)
+  LootDebug("UpdateRollTypes boss=" .. tostring(boss and boss.bossName or "NIL") .. " idx=" .. tostring(idx))
   if not boss or not boss.items then return end
 
   local needRender = false
-  for _, dropInfo in ipairs(drops) do
-    if not dropInfo.winner then
-      -- Noch kein Gewinner für diesen Drop bekannt
-    else
+  for di, dropInfo in ipairs(drops) do
+    local dropLink = dropInfo.itemHyperlink
+    local dropItemID = dropLink and dropLink:match("item:(%d+)")
+    LootDebug(string.format("  Drop[%d] itemID=%s winner=%s rollState=%s",
+      di, tostring(dropItemID),
+      tostring(dropInfo.winner and dropInfo.winner.playerName or "nil"),
+      tostring(dropInfo.playerRollState)))
+
+    if dropInfo.winner and dropLink then
       local winnerName  = dropInfo.winner.playerName
       local winnerClass = dropInfo.winner.playerClass
-      local dropLink    = dropInfo.itemHyperlink
-      if winnerName and dropLink then
-        -- Klassenfarbe cachen (playerClass ist englischer Key wie "WARRIOR")
-        if winnerClass then
-          local shortName = winnerName:match("^([^%-]+)") or winnerName
-          MyLootDB.knownClasses = MyLootDB.knownClasses or {}
-          MyLootDB.knownClasses[shortName] = winnerClass
-        end
 
-        local dropHitem = dropLink:match("Hitem:([^|]+)")
-        for _, loot in ipairs(boss.items) do
-          if loot.itemLink and loot.itemLink:match("Hitem:([^|]+)") == dropHitem then
-            -- Gewinner zuweisen falls noch nicht geschehen
-            if not loot.assignedTo then
+      if winnerClass then
+        local shortName = winnerName:match("^([^%-]+)") or winnerName
+        MyLootDB.knownClasses = MyLootDB.knownClasses or {}
+        MyLootDB.knownClasses[shortName] = winnerClass
+      end
+
+      -- ItemID-basiertes Matching (BonusIDs können zwischen Slot-Erkennung und C_LootHistory abweichen)
+      for _, loot in ipairs(boss.items) do
+        local lootItemID = loot.itemLink and loot.itemLink:match("item:(%d+)")
+        if lootItemID and lootItemID == dropItemID then
+          -- Bereits einem anderen Gewinner zugeordnet → zweite Kopie suchen
+          if loot.isGroupLoot and loot.assignedTo and loot.assignedTo ~= winnerName then
+            -- continue
+          else
+            loot.isGroupLoot = true  -- Von C_LootHistory bestätigt → kein Kriegsbeute-Item
+            if loot.assignedTo ~= winnerName then
+              LootDebug("  Zuweisung (C_LootHistory): " .. winnerName .. " → " .. tostring(dropItemID)
+                .. (loot.assignedTo and (" [überschreibt " .. loot.assignedTo .. "]") or ""))
               loot.assignedTo = winnerName
               loot.status     = "updated"
               if MyLootDB.role == "raidlead" and loot.session then
-                local syncMsg = "LOOT_SYNC:" .. idx .. ":" .. loot.session .. ":"
-                             .. winnerName .. ":" .. (loot.type or "nil")
-                MyLoot.QueueMessage("MYLOOT_SYNC", syncMsg, "RAID")
+                MyLoot.QueueMessage("MYLOOT_SYNC",
+                  "LOOT_SYNC:" .. idx .. ":" .. loot.session .. ":" .. winnerName .. ":" .. (loot.type or "nil"),
+                  "RAID")
               end
               needRender = true
             end
-            -- Rolltyp setzen falls Gewinner bekannt und Typ noch fehlt
-            if loot.assignedTo == winnerName and not loot.type
-               and dropInfo.playerRollState ~= nil then
-              loot.type = rollStateToType[dropInfo.playerRollState]
-              if MyLootDB.role == "raidlead" and loot.session and loot.type then
-                local syncMsg = "LOOT_SYNC:" .. idx .. ":" .. loot.session .. ":"
-                             .. winnerName .. ":" .. loot.type
-                MyLoot.QueueMessage("MYLOOT_SYNC", syncMsg, "RAID")
+            if dropInfo.playerRollState ~= nil then
+              local newType = rollStateToType[dropInfo.playerRollState]
+              if loot.type ~= newType then
+                loot.type = newType
+                if MyLootDB.role == "raidlead" and loot.session and loot.type then
+                  MyLoot.QueueMessage("MYLOOT_SYNC",
+                    "LOOT_SYNC:" .. idx .. ":" .. loot.session .. ":" .. winnerName .. ":" .. loot.type,
+                    "RAID")
+                end
+                needRender = true
               end
-              needRender = true
             end
             break
           end
@@ -269,6 +285,30 @@ function MyLoot.UpdateRollTypes(encounterID)
       end
     end
   end
+
+  -- Kriegsbeute-Cleanup: 10s nach dem letzten C_LootHistory-Update nicht bestätigte Items entfernen.
+  -- Nur wenn C_LootHistory mindestens ein Item bestätigt hat (sonst API nicht verfügbar).
+  if MyLoot._lootCleanupTimer then MyLoot._lootCleanupTimer:Cancel() end
+  MyLoot._lootCleanupTimer = C_Timer.NewTimer(10, function()
+    MyLoot._lootCleanupTimer = nil
+    local cleanIdx, cleanBoss = MyLoot.FindBossByEncounterID(encounterID)
+    if not cleanBoss or not cleanBoss.items then return end
+    local anyConfirmed = false
+    for _, item in ipairs(cleanBoss.items) do
+      if item.isGroupLoot then anyConfirmed = true; break end
+    end
+    if not anyConfirmed then return end
+    local removed = false
+    for i = #cleanBoss.items, 1, -1 do
+      if not cleanBoss.items[i].isGroupLoot then
+        LootDebug("Kriegsbeute-Item entfernt: " .. (cleanBoss.items[i].itemLink and cleanBoss.items[i].itemLink:match("%[(.-)%]") or "?"))
+        table.remove(cleanBoss.items, i)
+        removed = true
+      end
+    end
+    if removed then MyLoot.Render() end
+  end)
+
   if needRender then
     MyLoot.Render()
     MyLoot.CheckAllItemsAssigned(idx)

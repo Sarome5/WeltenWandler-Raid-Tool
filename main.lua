@@ -684,9 +684,13 @@ frame:SetScript("OnEvent", function(_, event, ...)
     end
 
   elseif event == "ENCOUNTER_LOOT_RECEIVED" then
-    -- Korrekte Reihenfolge laut MRT: encounterID, itemID, itemLink, quantity, playerName, className
+    -- Feuert NUR für persönliche Kriegsbeute, NICHT für Bedarf/Gier-Würfe → nur Klassenfarbe cachen
     local encounterID, itemID, itemLink, quantity, playerName, className = ...
-    MyLoot.AssignFromLootReceived(encounterID, playerName, itemLink, className)
+    if playerName and className then
+      local shortName = playerName:match("^([^%-]+)") or playerName
+      MyLootDB.knownClasses = MyLootDB.knownClasses or {}
+      MyLootDB.knownClasses[shortName] = className
+    end
 
   elseif event == "LOOT_HISTORY_UPDATE_DROP" then
     local encounterID = ...
