@@ -166,10 +166,12 @@ function MyLoot.CheckAllItemsAssigned(idx)
 end
 
 -- Rolltyp + Würfelzahl aus CHAT_MSG_LOOT lesen.
--- Format: "Spieler hat gewonnen (Typ - Zahl): [Item]."
+-- Format (raw): "[Beute]: Spieler hat gewonnen (Typ - Zahl): |cff...|Hitem:...|h[Name]|h|r."
 function MyLoot.UpdateRollFromChat(msg)
-  -- Pattern: "Spieler hat gewonnen (Typ - Zahl): |H..." oder "(Bedarf - 55, Primäre Spezialisierung): |H..."
-  local playerFull, rollTypeStr, rollValue = msg:match("^(.+) hat gewonnen %((.+) %- (%d+)[^)]*%): |H")
+  -- Channel-Prefix "[Beute]: " entfernen (WoW fügt diesen in den Message-Text ein)
+  local cleaned = msg:gsub("^%[.-%]:%s*", "")
+  -- Pattern ohne |H-Anker, da vor dem Hyperlink ein Color-Code stehen kann
+  local playerFull, rollTypeStr, rollValue = cleaned:match("^(.+) hat gewonnen %((.+) %- (%d+)[^)]*%):")
   if not playerFull then return end
 
   local chatItemID = msg:match("|Hitem:(%d+):")

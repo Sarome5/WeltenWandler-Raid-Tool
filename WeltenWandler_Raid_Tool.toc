@@ -2,7 +2,7 @@
 ## Title: WeltenWandler Raid Tool
 ## Notes: Loot- und Prioverwaltung für die Gilde WeltenWandler
 ## Author: Sarome-Antonidas
-## Version: 1.0.37
+## Version: 1.0.38
 ## SavedVariables: MyLootDB
 ## X-GitHub: https://github.com/Sarome5/WeltenWandler-Raid-Tool
 
