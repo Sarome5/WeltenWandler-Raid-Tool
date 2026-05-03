@@ -28,6 +28,8 @@ MyLoot.isBossActive             = false
 MyLoot.hasLootedBoss            = false
 MyLoot._activeEncounterID       = nil   -- eingefroren bei ENCOUNTER_END für UID-Generierung und Boss-Lookup
 MyLoot._awaitingLootAssignment  = false -- true zwischen ENCOUNTER_END (Kill) und nächstem ENCOUNTER_START
+MyLoot._encounterSessionID      = 0     -- erhöht bei jedem ENCOUNTER_START; verhindert dass verspätetes LOOT_CLOSED eines alten Bosses die Flags des neuen Encounters zurücksetzt
+MyLoot._lootOpenSessionID       = nil   -- SessionID zum Zeitpunkt des letzten LOOT_READY
 
 -- Addon-Nutzer Versionserkennung
 MyLoot._addonUsers       = {}    -- { [playerName] = version }
@@ -607,6 +609,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
       return
     end
     MyLoot.hasLootedBoss = true
+    MyLoot._lootOpenSessionID = MyLoot._encounterSessionID
     if MyLootDB.lootDebug then
       print("|cff00ccff[WRT Debug]|r LOOT_READY – activeEncounterID=", tostring(MyLoot._activeEncounterID))
       local idx, boss = MyLoot.FindBossByEncounterID(MyLoot._activeEncounterID)
@@ -615,8 +618,10 @@ frame:SetScript("OnEvent", function(_, event, ...)
     MyLoot.HandleLootOpened()
 
   elseif event == "LOOT_CLOSED" then
-    if MyLoot.isBossActive then
-
+    -- Nur resetten wenn das schließende Loot-Fenster zur aktuellen Encounter-Session gehört.
+    -- Schließt ein altes Loot-Fenster (vorheriger Boss) verspätet während eines neuen Encounters,
+    -- darf das die isEncounterActive-Flags des neuen Bosses nicht zurücksetzen.
+    if MyLoot.isBossActive and MyLoot._lootOpenSessionID == MyLoot._encounterSessionID then
       MyLoot.isEncounterActive = false
       MyLoot.isBossActive = false
 
@@ -627,6 +632,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
         boss._lootUIDCounter  = nil
       end
     end
+    MyLoot._lootOpenSessionID = nil
 
   elseif event == "ENCOUNTER_LOOT_RECEIVED" then
     -- Feuert NUR für persönliche Kriegsbeute, NICHT für Bedarf/Gier-Würfe → nur Klassenfarbe cachen
@@ -694,6 +700,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
     MyLoot.isBossActive             = true
     MyLoot.hasLootedBoss            = false
     MyLoot._awaitingLootAssignment  = false
+    MyLoot._encounterSessionID      = (MyLoot._encounterSessionID or 0) + 1
 
 
   elseif event == "ENCOUNTER_END" then
