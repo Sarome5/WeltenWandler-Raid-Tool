@@ -73,11 +73,10 @@ function MyLoot.UpdateRollTypes(encounterID)
   for di, dropInfo in ipairs(drops) do
     local dropLink = dropInfo.itemHyperlink
     local dropItemID = dropLink and dropLink:match("item:(%d+)")
-    LootDebug(string.format("  Drop[%d] itemID=%s winner=%s dropRollState=%s winnerRollState=%s",
+    LootDebug(string.format("  Drop[%d] itemID=%s winner=%s rollState=%s",
       di, tostring(dropItemID),
       tostring(dropInfo.winner and dropInfo.winner.playerName or "nil"),
-      tostring(dropInfo.playerRollState),
-      tostring(dropInfo.winner and dropInfo.winner.playerRollState or "nil")))
+      tostring(dropInfo.playerRollState)))
 
     -- C_LootHistory bestätigt dieses Item als Gruppen-Loot → isGroupLoot setzen,
     -- unabhängig davon ob schon ein Gewinner feststeht (rollState=4 = noch am würfeln)
@@ -117,17 +116,8 @@ function MyLoot.UpdateRollTypes(encounterID)
               loot.status     = "updated"
               needRender = true
             end
-            -- Rolltyp vom Gewinner lesen (winner.playerRollState), Fallback auf Drop-Ebene
-            local rollState = dropInfo.winner.playerRollState
-            if rollState == nil then rollState = dropInfo.playerRollState end
-            if rollState ~= nil then
-              local newType = rollStateToType[rollState]
-              LootDebug("  Rolltyp: state=" .. tostring(rollState) .. " → " .. tostring(newType))
-              if newType and loot.type ~= newType then
-                loot.type = newType
-                needRender = true
-              end
-            end
+            -- Rolltyp kommt aus CHAT_MSG_LOOT (UpdateRollFromChat)
+            -- playerRollState=5 bedeutet nur "abgeschlossen", kein Rolltyp
             break
           end
         end
@@ -173,6 +163,53 @@ function MyLoot.CheckAllItemsAssigned(idx)
   end
   MyLoot._awaitingLootAssignment = false
   LootDebug("Alle Items vergeben – Lootzeitraum beendet")
+end
+
+-- Rolltyp + Würfelzahl aus CHAT_MSG_LOOT lesen.
+-- Format: "Spieler hat gewonnen (Typ - Zahl): [Item]."
+function MyLoot.UpdateRollFromChat(msg)
+  local playerFull, rollTypeStr, rollValue = msg:match("^(.+) hat gewonnen %((.+) %- (%d+)%): |H")
+  if not playerFull then return end
+
+  local chatItemID = msg:match("|Hitem:(%d+):")
+  if not chatItemID then return end
+
+  local player = playerFull:match("^([^%-]+)") or playerFull
+
+  local rollType
+  if rollTypeStr == "Bedarf" then rollType = "MS"
+  elseif rollTypeStr == "Transmogrifikation" then rollType = "Transmog"
+  elseif rollTypeStr == "Gier" or rollTypeStr == "Entzauberung" then rollType = "OS"
+  end
+  if not rollType then return end
+
+  local roll = tonumber(rollValue)
+  LootDebug("Chat-Roll: " .. player .. " " .. rollType .. " (" .. tostring(roll) .. ") itemID=" .. chatItemID)
+
+  local _, boss = MyLoot.FindBossByEncounterID(MyLoot._activeEncounterID)
+  if not boss or not boss.items then return end
+
+  -- Erste Priorität: Item das bereits diesem Spieler zugewiesen ist
+  for _, loot in ipairs(boss.items) do
+    local lootItemID = loot.itemLink and loot.itemLink:match("item:(%d+)")
+    if lootItemID == chatItemID and loot.assignedTo == player then
+      loot.type = rollType
+      loot.roll = roll
+      MyLoot.Render()
+      return
+    end
+  end
+
+  -- Fallback: erstes Item gleicher ItemID ohne Rolltyp
+  for _, loot in ipairs(boss.items) do
+    local lootItemID = loot.itemLink and loot.itemLink:match("item:(%d+)")
+    if lootItemID == chatItemID and not loot.type then
+      loot.type = rollType
+      loot.roll = roll
+      MyLoot.Render()
+      return
+    end
+  end
 end
 
 function MyLoot.HandleLootOpened()

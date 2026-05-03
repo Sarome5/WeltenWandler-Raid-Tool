@@ -21,6 +21,7 @@ frame:RegisterEvent("CHAT_MSG_ADDON")
 frame:RegisterEvent("ENCOUNTER_START")
 frame:RegisterEvent("ENCOUNTER_END")
 frame:RegisterEvent("GROUP_ROSTER_UPDATE")
+frame:RegisterEvent("CHAT_MSG_LOOT")
 
 MyLoot.isEncounterActive        = false
 MyLoot.isBossActive             = false
@@ -643,6 +644,12 @@ frame:SetScript("OnEvent", function(_, event, ...)
   elseif event == "LOOT_HISTORY_UPDATE_ENCOUNTER" then
     local encounterID = ...
     MyLoot.UpdateRollTypes(encounterID)
+
+  elseif event == "CHAT_MSG_LOOT" then
+    local msg = ...
+    if msg and msg:find("hat gewonnen") then
+      MyLoot.UpdateRollFromChat(msg)
+    end
 
   elseif event == "CHAT_MSG_ADDON" then
     local prefix, msg, channel, sender = ...
