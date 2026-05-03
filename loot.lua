@@ -168,7 +168,8 @@ end
 -- Rolltyp + Würfelzahl aus CHAT_MSG_LOOT lesen.
 -- Format: "Spieler hat gewonnen (Typ - Zahl): [Item]."
 function MyLoot.UpdateRollFromChat(msg)
-  local playerFull, rollTypeStr, rollValue = msg:match("^(.+) hat gewonnen %((.+) %- (%d+)%): |H")
+  -- Pattern: "Spieler hat gewonnen (Typ - Zahl): |H..." oder "(Bedarf - 55, Primäre Spezialisierung): |H..."
+  local playerFull, rollTypeStr, rollValue = msg:match("^(.+) hat gewonnen %((.+) %- (%d+)[^)]*%): |H")
   if not playerFull then return end
 
   local chatItemID = msg:match("|Hitem:(%d+):")

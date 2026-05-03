@@ -651,6 +651,9 @@ frame:SetScript("OnEvent", function(_, event, ...)
 
   elseif event == "CHAT_MSG_LOOT" then
     local msg = ...
+    if MyLootDB.lootDebug then
+      print("|cff00ccff[WRT Debug]|r CHAT_MSG_LOOT: " .. tostring(msg and msg:sub(1, 100) or "nil"))
+    end
     if msg and msg:find("hat gewonnen") then
       MyLoot.UpdateRollFromChat(msg)
     end
