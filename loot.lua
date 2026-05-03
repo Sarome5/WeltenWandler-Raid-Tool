@@ -171,7 +171,8 @@ function MyLoot.UpdateRollFromChat(msg)
   -- Channel-Prefix "[Beute]: " entfernen (WoW fügt diesen in den Message-Text ein)
   local cleaned = msg:gsub("^%[.-%]:%s*", "")
   -- Pattern ohne |H-Anker, da vor dem Hyperlink ein Color-Code stehen kann
-  local playerFull, rollTypeStr, rollValue = cleaned:match("^(.+) hat gewonnen %((.+) %- (%d+)[^)]*%):")
+  -- 4. Capture: optionales Spez-Suffix ", Primäre Spezialisierung" etc.
+  local playerFull, rollTypeStr, rollValue, specSuffix = cleaned:match("^(.+) hat gewonnen %((.+) %- (%d+)([^)]*)%):")
   if not playerFull then return end
 
   local chatItemID = msg:match("|Hitem:(%d+):")
@@ -186,8 +187,13 @@ function MyLoot.UpdateRollFromChat(msg)
   end
   if not rollType then return end
 
+  local spec = nil
+  if specSuffix and specSuffix:find("Prim") then spec = "Primär"
+  elseif specSuffix and specSuffix:find("Sekund") then spec = "Sekundär"
+  end
+
   local roll = tonumber(rollValue)
-  LootDebug("Chat-Roll: " .. player .. " " .. rollType .. " (" .. tostring(roll) .. ") itemID=" .. chatItemID)
+  LootDebug("Chat-Roll: " .. player .. " " .. rollType .. (spec and " ("..spec..")" or "") .. " (" .. tostring(roll) .. ") itemID=" .. chatItemID)
 
   local _, boss = MyLoot.FindBossByEncounterID(MyLoot._activeEncounterID)
   if not boss or not boss.items then return end
@@ -198,6 +204,7 @@ function MyLoot.UpdateRollFromChat(msg)
     if lootItemID == chatItemID and loot.assignedTo == player then
       loot.type = rollType
       loot.roll = roll
+      loot.spec = spec
       MyLoot.Render()
       return
     end
@@ -209,6 +216,7 @@ function MyLoot.UpdateRollFromChat(msg)
     if lootItemID == chatItemID and not loot.type then
       loot.type = rollType
       loot.roll = roll
+      loot.spec = spec
       MyLoot.Render()
       return
     end
