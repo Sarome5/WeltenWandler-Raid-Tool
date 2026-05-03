@@ -73,10 +73,11 @@ function MyLoot.UpdateRollTypes(encounterID)
   for di, dropInfo in ipairs(drops) do
     local dropLink = dropInfo.itemHyperlink
     local dropItemID = dropLink and dropLink:match("item:(%d+)")
-    LootDebug(string.format("  Drop[%d] itemID=%s winner=%s rollState=%s",
+    LootDebug(string.format("  Drop[%d] itemID=%s winner=%s dropRollState=%s winnerRollState=%s",
       di, tostring(dropItemID),
       tostring(dropInfo.winner and dropInfo.winner.playerName or "nil"),
-      tostring(dropInfo.playerRollState)))
+      tostring(dropInfo.playerRollState),
+      tostring(dropInfo.winner and dropInfo.winner.playerRollState or "nil")))
 
     -- C_LootHistory bestätigt dieses Item als Gruppen-Loot → isGroupLoot setzen,
     -- unabhängig davon ob schon ein Gewinner feststeht (rollState=4 = noch am würfeln)
@@ -116,9 +117,13 @@ function MyLoot.UpdateRollTypes(encounterID)
               loot.status     = "updated"
               needRender = true
             end
-            if dropInfo.playerRollState ~= nil then
-              local newType = rollStateToType[dropInfo.playerRollState]
-              if loot.type ~= newType then
+            -- Rolltyp vom Gewinner lesen (winner.playerRollState), Fallback auf Drop-Ebene
+            local rollState = dropInfo.winner.playerRollState
+            if rollState == nil then rollState = dropInfo.playerRollState end
+            if rollState ~= nil then
+              local newType = rollStateToType[rollState]
+              LootDebug("  Rolltyp: state=" .. tostring(rollState) .. " → " .. tostring(newType))
+              if newType and loot.type ~= newType then
                 loot.type = newType
                 needRender = true
               end
